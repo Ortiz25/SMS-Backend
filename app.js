@@ -42,7 +42,7 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.set('trust proxy', true); // Trust all proxies
+app.set('trust proxy', true); 
 
 // Rate limiting
 const limiter = rateLimit({
