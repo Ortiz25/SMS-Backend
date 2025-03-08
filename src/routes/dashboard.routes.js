@@ -6,7 +6,7 @@ import pool from "../config/database.js";
 const router = express.Router();
 
 // Apply authentication middleware to all dashboard routes
-//router.use(authenticateToken);
+router.use(authenticateToken);
 
 /**
  * Get dashboard summary data
@@ -229,7 +229,7 @@ router.get("/summary", async (req, res, next) => {
           fp.receipt_number as reference,
           fp.created_at as timestamp
         FROM fee_payments fp
-        JOIN students s ON fp.student_id = s.id
+        JOIN students s ON fp.admission_number = s.admission_number
         ORDER BY fp.created_at DESC
         LIMIT 5)
         
@@ -1013,7 +1013,7 @@ async function getRecentActivities() {
   return activities;
 }
 
-router.get('/form-performance', async (req, res) => {
+router.get('/form-performance',authorizeRoles("admin", "teacher"), async (req, res) => {
   try {
     // Get current academic session
     const sessionResult = await pool.query(
@@ -1149,7 +1149,7 @@ router.get('/form-performance', async (req, res) => {
  * GET /api/analytics/form-performance/:classLevel
  * Retrieves detailed performance data for a specific class level
  */
-router.get('/form-performance/:classLevel', async (req, res) => {
+router.get('/form-performance/:classLevel', authorizeRoles("admin", "teacher"),async (req, res) => {
   try {
     const { classLevel } = req.params;
     
