@@ -180,7 +180,7 @@ router.get('/schedules/:scheduleId/results',authorizeRoles('admin', 'teacher', '
  * @access  Private (Admin, Teacher, Staff only)
  */
 router.post('/schedules/:scheduleId/results', authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
-  const client = await db.getClient();
+  const client = await pool.getClient();
   
   try {
     await client.query('BEGIN');
