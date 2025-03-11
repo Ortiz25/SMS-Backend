@@ -11,6 +11,8 @@ import { v4 as uuidv4 } from 'uuid';
 const router = express.Router();
 const teacherModel = createTeacherModel();
 
+router.use(authenticateToken);
+
 // Configure multer for file upload
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -57,7 +59,7 @@ const teacherValidation = [
 router.use(authenticateToken);
 
 // Get all teachers with comprehensive information
-router.get('/', authenticateToken, authorizeRoles('admin', 'teacher', 'staff'), async (req, res, next) => {
+router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, next) => {
     try {
         const currentSessionQuery = `
             SELECT id 
@@ -168,7 +170,7 @@ router.get('/', authenticateToken, authorizeRoles('admin', 'teacher', 'staff'), 
 });
 
 // Get single teacher details
-router.get('/:id', authenticateToken, authorizeRoles('admin', 'teacher', 'staff'), async (req, res, next) => {
+router.get('/:id', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, next) => {
     try {
         const teacherId = req.params.id;
 
@@ -293,7 +295,6 @@ router.get('/:id', authenticateToken, authorizeRoles('admin', 'teacher', 'staff'
 
 // Add new teacher
 router.post('/', 
-    authenticateToken,
     authorizeRoles('admin'),
     upload.array('documents', 5), // Allow multiple file uploads
     async (req, res, next) => {
@@ -511,5 +512,138 @@ router.get('/check/available-substitutes', authorizeRoles("admin", "librarian", 
       res.status(500).json({ message: 'Server error' });
     }
   });
-  
+
+// Update existing teacher
+router.put('/:id', 
+    upload.array('documents', 5),
+    async (req, res, next) => {
+        const client = await pool.connect();
+        console.log(req.body);
+        try {
+            const teacherId = req.params.id;
+            
+            // Extract form data
+            const {
+                name,
+                email,
+                phone,
+                position,
+                department,
+                employmentStatus,
+                subjects,
+                qualifications,
+                id
+            } = req.body;
+
+            // Split name into first and last name
+            const nameParts = name.split(' ');
+            const first_name = nameParts[0];
+            const last_name = nameParts.slice(1).join(' ');
+
+            // Validate required fields
+            const requiredFields = [
+                'name', 'email', 'phone', 
+                'department', 'employmentStatus'
+            ];
+            
+            for (let field of requiredFields) {
+                if (!req.body[field]) {
+                    return res.status(400).json({
+                        success: false,
+                        error: `Missing required field: ${field}`
+                    });
+                }
+            }
+
+            // Check if teacher exists
+            const checkTeacherQuery = `
+                SELECT * FROM teachers WHERE id = $1
+            `;
+            const teacherCheck = await client.query(checkTeacherQuery, [teacherId]);
+            
+            if (teacherCheck.rows.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Teacher not found'
+                });
+            }
+
+            // Check for email conflicts (excluding current teacher)
+            const emailCheckQuery = `
+                SELECT id FROM teachers 
+                WHERE email = $1 AND id != $2
+            `;
+            const existingEmailCheck = await client.query(emailCheckQuery, [email, teacherId]);
+            
+            if (existingEmailCheck.rows.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    error: `A teacher with email ${email} already exists.`
+                });
+            }
+
+            // Update teacher query
+            const updateTeacherQuery = `
+                UPDATE teachers SET
+                    first_name = $1,
+                    last_name = $2,
+                    email = $3,
+                    phone_primary = $4,
+                    department = $5,
+                    employment_type = $6,
+                    subject_specialization = $7,
+                    updated_at = NOW()
+                WHERE id = $8
+                RETURNING id
+            `;
+
+            const teacherValues = [
+                first_name,
+                last_name,
+                email,
+                phone,
+                department,
+                employmentStatus.toLowerCase().replace(' ', '-'),
+                subjects || [],
+                teacherId
+            ];
+
+            const updateResult = await client.query(
+                updateTeacherQuery, 
+                teacherValues
+            );
+
+            // Commit transaction
+            await client.query('COMMIT');
+
+            // Return success response
+            res.json({
+                success: true,
+                message: 'Teacher updated successfully',
+                data: {
+                    id: teacherId,
+                    name: name
+                }
+            });
+        } catch (error) {
+            // Rollback transaction
+            await client.query('ROLLBACK');
+            
+            console.error('Error updating teacher:', error);
+            
+            // Check for unique constraint violations
+            if (error.code === '23505') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'A teacher with this email or other unique identifier already exists'
+                });
+            }
+            
+            next(error);
+        } finally {
+            client.release();
+        }
+    }
+);
+
 export default router;

@@ -51,6 +51,8 @@ router.post(
           room_number,
           academic_session_id
         } = req.body;
+
+        console.log(req.body)
   
         // Validate required fields
         if (!class_id || !subject_id || !teacher_id || !day_of_week || !start_time || !end_time || !room_number) {
@@ -96,6 +98,7 @@ router.post(
             end_time
           ]
         );
+        console.log(conflictResult.rows)
   
         // If conflicts exist, return error with details
         if (conflictResult.rows.length > 0) {
@@ -150,6 +153,7 @@ router.post(
             academic_session_id || 1 // Default to 1 if not provided
           ]
         );
+        console.log(result)
   
         return res.status(201).json({
           success: true,

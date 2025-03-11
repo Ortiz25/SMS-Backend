@@ -718,61 +718,50 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res, next) => {
 
     const student = checkResult.rows[0];
 
-    // 1. Delete attendance records
-    await client.query(
-      `
-            DELETE FROM attendance 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
+    // Log some info for debugging - remove in production
+    console.log(`Attempting to delete student ID: ${studentId}, Admission Number: ${student.admission_number}`);
 
-    // 2. Delete academic records
-    await client.query(
-      `
-            DELETE FROM academic_records 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
+    // Query to check if any table references this student
+    const tables = [
+      { name: 'attendance', column: 'student_id' },
+      { name: 'exam_results', column: 'student_id' },
+      { name: 'student_result_summary', column: 'student_id' },
+      { name: 'student_subjects', column: 'student_id' },
+      { name: 'dormitory_allocations', column: 'student_id' },
+      { name: 'transport_allocations', column: 'student_id' },
+      { name: 'fee_payments', column: 'student_id' },
+      { name: 'student_fee_details', column: 'student_id' },
+      { name: 'book_borrowing', column: 'student_id' },
+      { name: 'disciplinary_incidents', column: 'student_id' },
+      { name: 'attendance_summary', column: 'student_id' }
+    ];
 
-    // 3. Delete hostel allocations
-    await client.query(
-      `
-            DELETE FROM hostel_allocations 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
+    // Safely delete from each table, checking for column existence first
+    for (const table of tables) {
+      try {
+        // Check if column exists in table
+        const columnCheckQuery = `
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = '${table.name}' 
+          AND column_name = '${table.column}'
+        `;
+        const columnCheckResult = await client.query(columnCheckQuery);
+        
+        if (columnCheckResult.rows.length > 0) {
+          // Column exists, proceed with deletion
+          console.log(`Deleting from ${table.name} where ${table.column}=${studentId}`);
+          await client.query(`DELETE FROM ${table.name} WHERE ${table.column} = $1`, [studentId]);
+        } else {
+          console.log(`Table ${table.name} doesn't have column ${table.column}, skipping`);
+        }
+      } catch (error) {
+        console.log(`Error when trying to delete from ${table.name}: ${error.message}`);
+        // Continue with other tables instead of aborting the entire operation
+      }
+    }
 
-    // 4. Delete transport allocations
-    await client.query(
-      `
-            DELETE FROM transport_allocations 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
-
-    // 5. Delete fee payments
-    await client.query(
-      `
-            DELETE FROM fee_payments 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
-
-    // 6. Delete book borrowings
-    await client.query(
-      `
-            DELETE FROM book_borrowing 
-            WHERE student_id = $1
-        `,
-      [studentId]
-    );
-
-    // 7. Get parent relationships
+    // Get parent relationships
     const parentQuery = `
             SELECT parent_id 
             FROM student_parent_relationships 
@@ -781,7 +770,7 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res, next) => {
     const parentResult = await client.query(parentQuery, [studentId]);
     const parentIds = parentResult.rows.map((row) => row.parent_id);
 
-    // 8. Delete student-parent relationships
+    // Delete student-parent relationships
     await client.query(
       `
             DELETE FROM student_parent_relationships 
@@ -790,7 +779,7 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res, next) => {
       [studentId]
     );
 
-    // 9. Delete parents if they have no other children
+    // Delete parents if they have no other children
     if (parentIds.length > 0) {
       for (const parentId of parentIds) {
         const otherChildrenQuery = `
@@ -815,7 +804,7 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res, next) => {
       }
     }
 
-    // 10. Finally delete the student
+    // Finally delete the student
     await client.query(
       `
             DELETE FROM students 
@@ -841,7 +830,6 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res, next) => {
     client.release();
   }
 });
-
 // Get student attendance
 router.get(
   "/:id/attendance",
