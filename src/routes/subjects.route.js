@@ -13,72 +13,111 @@ router.use(authenticateToken);
 // Get subjects by IDs (for teacher specialization)
 // Get subjects by teacher specialization
 router.get('/subjects', async (req, res) => {
-    try {
-      const { teacher_id, specialization } = req.query;
-        console.log(req.body)
-      // If we have a teacher ID, get subjects based on their specialization
-      if (teacher_id) {
-        const teacherQuery = `
-          SELECT subject_specialization
-          FROM teachers
-          WHERE id = $1
-        `;
-        
-        const teacherResult = await pool.query(teacherQuery, [teacher_id]);
-        
-        if (teacherResult.rows.length === 0) {
-          return res.status(404).json({ message: 'Teacher not found' });
-        }
-        
-        // Get the specialization array from the teacher record
-        const specializations = teacherResult.rows[0].subject_specialization || [];
-        
-        // Now fetch subjects that match these specializations
-        const subjectsQuery = `
-          SELECT id, name, code, curriculum_type, level, department_id
-          FROM subjects
-          WHERE name = ANY($1::text[])
-          OR code = ANY($1::text[])
-          ORDER BY name
-        `;
-        
-        const subjectsResult = await pool.query(subjectsQuery, [specializations]);
-        return res.json(subjectsResult.rows);
-      }
+  try {
+    const { teacher_id, specialization, level, curriculum_type } = req.query;
+    
+    // If level and curriculum_type are provided, filter subjects by these criteria
+    if (level && curriculum_type) {
+      const levelSubjectsQuery = `
+        SELECT id, name, code, curriculum_type, level, department_id
+        FROM subjects
+        WHERE (level = $1 OR level = 'all')
+        AND curriculum_type = $2
+        ORDER BY name
+      `;
       
-      // If specialization query parameter is provided directly
-      else if (specialization) {
-        // Parse specialization parameter as comma-separated string
-        const specializationArray = specialization.split(',').map(s => s.trim());
-        
-        const subjectsByNameQuery = `
-          SELECT id, name, code, curriculum_type, level, department_id
-          FROM subjects
-          WHERE name = ANY($1::text[])
-          OR code = ANY($1::text[])
-          ORDER BY name
-        `;
-        
-        const subjectsResult = await pool.query(subjectsByNameQuery, [specializationArray]);
-        return res.json(subjectsResult.rows);
-      }
+      const levelSubjectsResult = await pool.query(levelSubjectsQuery, [level, curriculum_type]);
       
-      // Otherwise return all subjects
-      else {
-        const allSubjectsQuery = `
-          SELECT id, name, code, curriculum_type, level, department_id
-          FROM subjects
-          ORDER BY name
-        `;
-        
-        const allResult = await pool.query(allSubjectsQuery);
-        return res.json(allResult.rows);
-      }
-    } catch (error) {
-      console.error('Error fetching subjects:', error);
-      res.status(500).json({ message: 'Server error', error: error.message });
+      return res.json({
+        success: true,
+        message: `Subjects for ${level} (${curriculum_type}) fetched successfully`,
+        data: levelSubjectsResult.rows
+      });
     }
-  });
+    // If we have a teacher ID, get subjects based on their specialization
+    else if (teacher_id) {
+      const teacherQuery = `
+        SELECT subject_specialization
+        FROM teachers
+        WHERE id = $1
+      `;
+     
+      const teacherResult = await pool.query(teacherQuery, [teacher_id]);
+     
+      if (teacherResult.rows.length === 0) {
+        return res.status(404).json({ 
+          success: false,
+          message: 'Teacher not found' 
+        });
+      }
+     
+      // Get the specialization array from the teacher record
+      const specializations = teacherResult.rows[0].subject_specialization || [];
+     
+      // Now fetch subjects that match these specializations
+      const subjectsQuery = `
+        SELECT id, name, code, curriculum_type, level, department_id
+        FROM subjects
+        WHERE name = ANY($1::text[])
+        OR code = ANY($1::text[])
+        ORDER BY name
+      `;
+     
+      const subjectsResult = await pool.query(subjectsQuery, [specializations]);
+      
+      return res.json({
+        success: true,
+        message: 'Teacher specialized subjects fetched successfully',
+        data: subjectsResult.rows
+      });
+    }
+    // If specialization query parameter is provided directly
+    else if (specialization) {
+      // Parse specialization parameter as comma-separated string
+      const specializationArray = specialization.split(',').map(s => s.trim());
+     
+      const subjectsByNameQuery = `
+        SELECT id, name, code, curriculum_type, level, department_id
+        FROM subjects
+        WHERE name = ANY($1::text[])
+        OR code = ANY($1::text[])
+        ORDER BY name
+      `;
+     
+      const subjectsResult = await pool.query(subjectsByNameQuery, [specializationArray]);
+      
+      return res.json({
+        success: true,
+        message: 'Specialized subjects fetched successfully',
+        data: subjectsResult.rows
+      });
+    }
+    // Otherwise return all subjects
+    else {
+      const allSubjectsQuery = `
+        SELECT id, name, code, curriculum_type, level, department_id
+        FROM subjects
+        ORDER BY name
+      `;
+     
+      const allResult = await pool.query(allSubjectsQuery);
+      
+      return res.json({
+        success: true,
+        message: 'All subjects fetched successfully',
+        data: allResult.rows
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching subjects:', error);
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+});
   
 // Get class by ID with details
 router.get('/:id', async (req, res, next) => {

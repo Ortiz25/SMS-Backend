@@ -110,99 +110,106 @@ router.get('/',  authorizeRoles("admin", "librarian", "teacher", "student"), asy
 
 // Create a new leave request
 router.post('/',  authorizeRoles("admin", "librarian", "teacher", "student"), async (req, res) => {
-    const client = await pool.connect();
-    
-    try {
-      const { 
-        teacher_id, 
-        leave_type_id, 
-        start_date, 
-        end_date, 
-        reason, 
-        substitute_teacher_id,
-        attachment_url
-      } = req.body;
-      console.log(req.body)
-      
-      // Validate required fields
-      if (!teacher_id || !leave_type_id || !start_date || !end_date || !reason) {
-        return res.status(400).json({ 
-          message: 'Missing required fields' 
-        });
-      }
-      
-      // Calculate days count (excluding weekends)
-      const days_count = await calculateWorkingDays(start_date, end_date);
-      
-      // Begin transaction
-      await client.query('BEGIN');
-      
-      // Check leave balance
-      const balanceQuery = `
-        SELECT remaining_days 
-        FROM leave_balances 
-        WHERE teacher_id = $1 
-        AND leave_type_id = $2 
-        AND academic_year = (
-          SELECT academic_year 
-          FROM (
-            SELECT '2024-2025' as academic_year -- This should be fetched dynamically
-          ) AS current_year
-        )
-      `;
-      
-      const balanceResult = await client.query(balanceQuery, [teacher_id, leave_type_id]);
-      
-      if (balanceResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ 
-          message: 'No leave balance found for this teacher and leave type' 
-        });
-      }
-      
-      const remaining_days = balanceResult.rows[0].remaining_days;
-      
-      if (days_count > remaining_days) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ 
-          message: `Insufficient leave balance. Requested: ${days_count} days, Available: ${remaining_days} days` 
-        });
-      }
-      
-      // Insert the leave request
-      const insertQuery = `
-        INSERT INTO leave_requests
-          (teacher_id, leave_type_id, start_date, end_date, days_count, 
-           reason, substitute_teacher_id, attachment_url, status)
-        VALUES 
-          ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
-        RETURNING *
-      `;
-      
-      const insertResult = await client.query(insertQuery, [
-        teacher_id,
-        leave_type_id,
-        start_date,
-        end_date,
-        days_count,
-        reason,
-        substitute_teacher_id || null,
-        attachment_url || null
-      ]);
-      
-      // Commit transaction
-      await client.query('COMMIT');
-      
-      res.status(201).json(insertResult.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error creating leave request:', error);
-      res.status(500).json({ message: 'Server error' });
-    } finally {
-      client.release();
+  const client = await pool.connect();
+ 
+  try {
+    const {
+      teacher_id,
+      leave_type_id,
+      start_date,
+      end_date,
+      reason,
+      substitute_teacher_id,
+      attachment_url
+    } = req.body;
+    console.log(req.body);
+   
+    // Validate required fields
+    if (!teacher_id || !leave_type_id || !start_date || !end_date || !reason) {
+      return res.status(400).json({
+        message: 'Missing required fields'
+      });
     }
-  });
-  
+   
+    // Calculate days count (excluding weekends)
+    const days_count = await calculateWorkingDays(start_date, end_date);
+    
+    // Begin transaction
+    await client.query('BEGIN');
+    
+    // Get current academic year
+    const academicYearQuery = `
+      SELECT CONCAT(year, '-', (year::integer + 1)) AS academic_year
+      FROM academic_sessions
+      WHERE is_current = true
+      LIMIT 1
+    `;
+    
+    const academicYearResult = await client.query(academicYearQuery);
+    const academicYear = academicYearResult.rows.length > 0 
+      ? academicYearResult.rows[0].academic_year 
+      : '2024-2025'; // Fallback
+   
+    // Check leave balance
+    const balanceQuery = `
+      SELECT remaining_days
+      FROM leave_balances
+      WHERE teacher_id = $1
+      AND leave_type_id = $2
+      AND academic_year = $3
+    `;
+   
+    const balanceResult = await client.query(balanceQuery, [teacher_id, leave_type_id, academicYear]);
+   
+    if (balanceResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'No leave balance found for this teacher and leave type'
+      });
+    }
+   
+    const remaining_days = balanceResult.rows[0].remaining_days;
+   
+    if (days_count > remaining_days) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: `Insufficient leave balance. Requested: ${days_count} days, Available: ${remaining_days} days`
+      });
+    }
+   
+    // Insert the leave request
+    const insertQuery = `
+      INSERT INTO leave_requests
+        (teacher_id, leave_type_id, start_date, end_date, days_count,
+         reason, substitute_teacher_id, attachment_url, status)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+      RETURNING *
+    `;
+   
+    const insertResult = await client.query(insertQuery, [
+      teacher_id,
+      leave_type_id,
+      start_date,
+      end_date,
+      days_count,
+      reason,
+      substitute_teacher_id || null,
+      attachment_url || null
+    ]);
+   
+    // Commit transaction
+    await client.query('COMMIT');
+   
+    res.status(201).json(insertResult.rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error creating leave request:', error);
+    res.status(500).json({ message: 'Server error' });
+  } finally {
+    client.release();
+  }
+});
   // Helper function to calculate working days between two dates
   async function calculateWorkingDays(startDate, endDate) {
     const start = new Date(startDate);
@@ -345,10 +352,12 @@ router.patch('/:id/status', authorizeRoles("admin", "librarian", "teacher", "stu
       `;
       
       const academicYearResult = await pool.query(academicYearQuery);
+      
       const academicYear = academicYearResult.rows.length > 0 
         ? academicYearResult.rows[0].academic_year 
         : '2024-2025'; // Fallback
       
+
       // Get leave balances for the teacher
       const balancesQuery = `
         SELECT 
@@ -427,6 +436,7 @@ router.patch('/:id/status', authorizeRoles("admin", "librarian", "teacher", "stu
           
           // Fetch the newly created balances
           const newBalancesResult = await pool.query(balancesQuery, [teacherId, academicYear]);
+          console.log(newBalancesResult.rows)
           return res.json(newBalancesResult.rows);
         } catch (error) {
           await client.query('ROLLBACK');
@@ -435,7 +445,7 @@ router.patch('/:id/status', authorizeRoles("admin", "librarian", "teacher", "stu
           client.release();
         }
       }
-      
+      console.log(balancesResult.rows)
       res.json(balancesResult.rows);
     } catch (error) {
       console.error('Error fetching leave balances:', error);

@@ -15,9 +15,9 @@ const pool = new Pool({
     database: process.env.DB_NAME,
     password: process.env.DB_PASSWORD,
     port: parseInt(process.env.DB_PORT || '5432'),
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    max: 20, // Keep as needed
+    idleTimeoutMillis: 60000, // Extend to 60s (1 min)
+    connectionTimeoutMillis: 10000, // Extend to 10s
 });
 
 pool.on('connect', () => {

@@ -4,6 +4,7 @@ import { body } from "express-validator";
 import { authenticateToken, authorizeRoles } from "../middleware/auth.js";
 import { createStudentModel } from "../models/studentModel.js";
 import pool from "../config/database.js";
+import { CLIENT_RENEG_LIMIT } from "tls";
 
 const router = express.Router();
 const studentModel = createStudentModel();
@@ -138,105 +139,132 @@ router.get(
     try {
       // Base query
       const query = `
-            SELECT
-                s.id,
-                s.first_name,
-                s.last_name,
-                s.other_names,
-                s.admission_number AS "admissionNo",
-                s.current_class AS class,
-                s.stream,
-                s.blood_group,
-                s.allergies,
-                s.admission_date,
-                s.medical_conditions,
-                s.previous_school,
-                INITCAP(s.gender) AS gender,
-                TO_CHAR(s.date_of_birth, 'YYYY-MM-DD') AS "dateOfBirth",
-                
-                -- Attendance Percentage
-                (SELECT 
-                    ROUND((COUNT(CASE WHEN a.status = 'present' THEN 1 END) * 100.0 / 
-                    NULLIF(COUNT(*), 0))::numeric, 0) || '%'
-                FROM attendance a 
-                WHERE a.student_id = s.id) AS attendance,
-                
-                -- Latest Performance Grade
-                (SELECT er.grade 
-                FROM exam_results er
-                JOIN exam_schedules es ON er.exam_schedule_id = es.id
-                JOIN examinations e ON es.examination_id = e.id
-                WHERE er.student_id = s.id
-                ORDER BY e.start_date DESC 
-                LIMIT 1) AS performance,
-                
-                s.status,
-                s.address,
-                s.student_type AS "studentType",
-                
-                -- Dormitory Info if Boarder
-                (SELECT d.name 
-                FROM dormitory_allocations da 
-                JOIN dormitories d ON da.room_id = d.id 
-                WHERE da.student_id = s.id AND da.status = 'active'
-                LIMIT 1) AS dormitory,
-                
-                -- Bus Route if Day Scholar
-                (SELECT tr.route_name 
-                FROM transport_allocations ta 
-                JOIN transport_routes tr ON ta.route_id = tr.id 
-                WHERE ta.student_id = s.id AND ta.status = 'active'
-                LIMIT 1) AS "busRoute",
-                
-                -- Guardian Info as JSON
-                JSON_BUILD_OBJECT(
-                    'name', p.first_name || ' ' || p.last_name,
-                    'phone', '+254 ' || SUBSTRING(p.phone_primary, 2),
-                    'email', p.email,
-                    'relationship', p.relationship  
-                ) AS guardian
-            FROM 
-                students s
-          
-            LEFT JOIN 
-                student_parent_relationships spr ON s.id = spr.student_id AND spr.is_primary_contact = true
-            LEFT JOIN 
-                parents p ON spr.parent_id = p.id
-        `;
+        SELECT
+            s.id,
+            s.first_name,
+            s.last_name,
+            s.other_names,
+            s.admission_number AS "admissionNo",
+            s.current_class AS class,
+            s.stream,
+            s.blood_group,
+            s.allergies,
+            s.admission_date,
+            s.medical_conditions,
+            s.previous_school,
+            INITCAP(s.gender) AS gender,
+            TO_CHAR(s.date_of_birth, 'YYYY-MM-DD') AS "dateOfBirth",
+           
+            -- Attendance Percentage
+            (SELECT
+                ROUND((COUNT(CASE WHEN a.status = 'present' THEN 1 END) * 100.0 /
+                NULLIF(COUNT(*), 0))::numeric, 0) || '%'
+            FROM attendance a
+            WHERE a.student_id = s.id) AS attendance,
+           
+            -- Latest Performance Grade
+            (SELECT er.grade
+            FROM exam_results er
+            JOIN exam_schedules es ON er.exam_schedule_id = es.id
+            JOIN examinations e ON es.examination_id = e.id
+            WHERE er.student_id = s.id
+            ORDER BY e.start_date DESC
+            LIMIT 1) AS performance,
+           
+            s.status,
+            s.address,
+            s.student_type AS "studentType",
+           
+            -- Dormitory Info if Boarder
+            (SELECT d.name
+            FROM dormitory_allocations da
+            JOIN dormitory_rooms dr ON da.room_id = dr.id
+            JOIN dormitories d ON dr.dormitory_id = d.id
+            WHERE da.student_id = s.id AND da.status = 'active'
+            LIMIT 1) AS dormitory,
+           
+            -- Bus Route if Day Scholar
+            (SELECT tr.route_name
+            FROM transport_allocations ta
+            JOIN transport_routes tr ON ta.route_id = tr.id
+            WHERE ta.student_id = s.id AND ta.status = 'active'
+            LIMIT 1) AS "busRoute",
+           
+            -- Guardian Info as JSON
+            JSON_BUILD_OBJECT(
+                'name', p.first_name || ' ' || p.last_name,
+                'phone', '+254 ' || SUBSTRING(p.phone_primary, 2),
+                'email', p.email,
+                'relationship', p.relationship  
+            ) AS guardian,
+            
+            -- Add subjects as JSON array
+            COALESCE(
+                (
+                    SELECT JSON_AGG(
+                        JSON_BUILD_OBJECT(
+                            'id', sub.id,
+                            'name', sub.name,
+                            'code', sub.code,
+                            'teacher', COALESCE(t.first_name || ' ' || t.last_name, 'Not Assigned'),
+                            'status', ss.status,
+                            'isElective', ss.is_elective
+                        )
+                    )
+                    FROM student_subjects ss
+                    JOIN subjects sub ON ss.subject_id = sub.id
+                    LEFT JOIN teachers t ON ss.teacher_id = t.id
+                    WHERE ss.student_id = s.id 
+                    AND ss.status = 'active'
+                    -- Get current academic session subjects
+                    AND ss.academic_session_id = (
+                        SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1
+                    )
+                ),
+                '[]'::json
+            ) AS subjects
+        FROM
+            students s
+     
+        LEFT JOIN
+            student_parent_relationships spr ON s.id = spr.student_id AND spr.is_primary_contact = true
+        LEFT JOIN
+            parents p ON spr.parent_id = p.id
+      `;
 
       // Add filters if needed
       const { classId, stream, studentType } = req.query;
       let whereClause = "s.status = 'active'";
       const values = [];
       let paramIndex = 1;
-
+      
       if (classId) {
-        whereClause += ` AND c.id = $${paramIndex}`;
+        whereClause += ` AND s.current_class = (SELECT level FROM classes WHERE id = $${paramIndex})`;
         values.push(classId);
         paramIndex++;
       }
-
+      
       if (stream) {
         whereClause += ` AND s.stream = $${paramIndex}`;
         values.push(stream);
         paramIndex++;
       }
-
+      
       if (studentType) {
         whereClause += ` AND s.student_type = $${paramIndex}`;
         values.push(studentType);
         paramIndex++;
       }
-
+      
       // Complete the query
       const finalQuery = `
-            ${query}
-            WHERE ${whereClause}
-            ORDER BY s.admission_number
-        `;
-
+        ${query}
+        WHERE ${whereClause}
+        ORDER BY s.admission_number
+      `;
+      
       const result = await pool.query(finalQuery, values);
-
+      
       res.json({
         success: true,
         count: result.rows.length,
@@ -339,20 +367,6 @@ router.get(
   }
 );
 
-// Create new student
-router.post(
-  "/",
-  authorizeRoles("admin"),
-  validate(studentValidation),
-  async (req, res, next) => {
-    try {
-      const result = await studentModel.create(req.body);
-      res.status(201).json(result.rows[0]);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
 
 // src/routes/student.routes.js - Add or update this route
 
@@ -867,12 +881,17 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
       stream,
       dateOfBirth,
       gender,
+      nationality,
+      nemisUpi,
+      previousSchool,
+      bloodGroup,
 
       // Student Type and Related Info
       studentType,
       address,
       busRoute,
       hostel,
+      roomNumber,
 
       // Medical Information
       medicalInfo,
@@ -880,10 +899,15 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
       // Guardian Information
       guardianFirstName,
       guardianLastName,
+      guardianIdNumber,
       guardianPhone,
+      guardianPhoneSecondary,
       guardianEmail,
       guardianRelation,
       guardianAddress,
+      
+      // Subject Selection - New field
+      selectedSubjects
     } = req.body;
 
     // Determine curriculum type based on class
@@ -910,10 +934,10 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
                 admission_number, first_name, last_name, other_names, 
                 date_of_birth, gender, address, admission_date,
                 curriculum_type, current_class, stream,
-                allergies,
+                allergies, blood_group, nationality, nemis_upi, previous_school,
                 emergency_contact_name, emergency_contact_phone,
                 student_type, status, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, CURRENT_TIMESTAMP)
             RETURNING id
         `;
 
@@ -921,15 +945,19 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
       admissionNo,
       firstName,
       lastName,
-      otherNames,
+      otherNames || null,
       dateOfBirth,
       gender.toLowerCase(),
-      address,
+      address || null,
       new Date(), // admission_date is today
       curriculumType,
       className,
       stream,
       allergiesArray,
+      bloodGroup || null,
+      nationality || 'Kenyan',
+      nemisUpi || null,
+      previousSchool || null,
       `${guardianFirstName} ${guardianLastName}`, // Using guardian info for emergency contact by default
       guardianPhone,
       studentType === "Boarder" ? "boarder" : "day_scholar",
@@ -942,19 +970,21 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
     // 2. Create parent/guardian record
     const guardianQuery = `
             INSERT INTO parents (
-                first_name, last_name, relationship, email, 
-                phone_primary, address, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                first_name, last_name, id_number, relationship, email, 
+                phone_primary, phone_secondary, address, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
             RETURNING id
         `;
 
     const guardianParams = [
       guardianFirstName,
       guardianLastName,
+      guardianIdNumber || null,
       guardianRelation,
       guardianEmail || null,
       guardianPhone,
-      guardianAddress, // Using same address as student for now
+      guardianPhoneSecondary || null,
+      guardianAddress,
     ];
 
     const guardianResult = await client.query(guardianQuery, guardianParams);
@@ -975,21 +1005,117 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
 
     await client.query(relationshipQuery, relationshipParams);
 
-    // 4. If boarder, create dormitory allocation
-    if (studentType === "Boarder" && hostel) {
-      // Find current academic session
-      const sessionQuery = `SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1`;
-      const sessionResult = await client.query(sessionQuery);
-      const academicSessionId = sessionResult.rows[0]?.id;
+    // Find current academic session
+    const sessionQuery = `SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1`;
+    const sessionResult = await client.query(sessionQuery);
+    const academicSessionId = sessionResult.rows[0]?.id;
 
-      if (academicSessionId) {
-        // Get dormitory id from name
-        const dormQuery = `SELECT id FROM dormitories WHERE name = $1 LIMIT 1`;
-        const dormResult = await client.query(dormQuery, [hostel]);
-        const dormitoryId = dormResult.rows[0]?.id;
+    // 4. If academicSessionId exists and we have subjects, create student-subject relationships
+    if (academicSessionId && Array.isArray(selectedSubjects) && selectedSubjects.length > 0) {
+      // Get the class ID from class name and stream
+      const classQuery = `
+        SELECT id FROM classes 
+        WHERE level = $1 AND stream = $2 
+        AND academic_session_id = $3
+        LIMIT 1
+      `;
+      
+      const classResult = await client.query(classQuery, [className, stream, academicSessionId]);
+      const classId = classResult.rows[0]?.id;
+      
+      if (classId) {
+        // Prepare the values for multiple inserts
+        const subjectValues = [];
+        const subjectParams = [];
+        let paramIndex = 1;
+        
+        for (const subjectId of selectedSubjects) {
+          subjectValues.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, CURRENT_DATE, $${paramIndex + 5}, $${paramIndex + 6}, CURRENT_TIMESTAMP)`);
+          subjectParams.push(
+            studentId,
+            subjectId,
+            classId,
+            academicSessionId,
+            false, // is_elective - can be determined by business logic later
+            'active', // status
+            null  // teacher_id - will be assigned later or populated from teacher_subjects
+          );
+          paramIndex += 7;
+        }
+        
+        if (subjectValues.length > 0) {
+          const subjectEnrollmentQuery = `
+            INSERT INTO student_subjects (
+              student_id, subject_id, class_id, academic_session_id, 
+              is_elective, enrollment_date, status, teacher_id, created_at
+            ) VALUES ${subjectValues.join(', ')}
+          `;
+          
+          await client.query(subjectEnrollmentQuery, subjectParams);
+          
+          // Optionally, we can also try to assign teachers based on existing teacher_subjects mappings
+          const assignTeachersQuery = `
+            UPDATE student_subjects ss
+            SET teacher_id = ts.teacher_id
+            FROM teacher_subjects ts
+            WHERE ss.student_id = $1
+            AND ss.subject_id = ts.subject_id
+            AND ss.class_id = ts.class_id
+            AND ss.academic_session_id = ts.academic_session_id
+          `;
+          
+          await client.query(assignTeachersQuery, [studentId]);
+        }
+      }
+    }
 
-        if (dormitoryId) {
-          // First get an available room in this dormitory
+    // 5. If boarder, create dormitory allocation
+    if (studentType === "Boarder" && hostel && academicSessionId) {
+      // Get dormitory id from name
+      const dormQuery = `SELECT id FROM dormitories WHERE name = $1 LIMIT 1`;
+      const dormResult = await client.query(dormQuery, [hostel]);
+      const dormitoryId = dormResult.rows[0]?.id;
+
+      if (dormitoryId) {
+        // Check if a room number was specified
+        if (roomNumber) {
+          // Check if the specified room exists and has space
+          const specificRoomQuery = `
+            SELECT id FROM dormitory_rooms 
+            WHERE dormitory_id = $1 
+            AND room_number = $2
+            AND occupied < capacity
+            LIMIT 1
+          `;
+          const specificRoomResult = await client.query(specificRoomQuery, [dormitoryId, roomNumber]);
+          const specificRoomId = specificRoomResult.rows[0]?.id;
+          
+          if (specificRoomId) {
+            // Find an available bed number
+            const bedQuery = `
+              SELECT MAX(CAST(bed_number AS INTEGER)) as max_bed
+              FROM dormitory_allocations
+              WHERE room_id = $1
+            `;
+            const bedResult = await client.query(bedQuery, [specificRoomId]);
+            const nextBed = (bedResult.rows[0]?.max_bed || 0) + 1;
+
+            const dormAllocationQuery = `
+              INSERT INTO dormitory_allocations (
+                student_id, room_id, bed_number, academic_session_id, 
+                allocation_date, status, created_at
+              ) VALUES ($1, $2, $3, $4, CURRENT_DATE, 'active', CURRENT_TIMESTAMP)
+            `;
+
+            await client.query(dormAllocationQuery, [
+              studentId,
+              specificRoomId,
+              nextBed.toString(),
+              academicSessionId
+            ]);
+          }
+        } else {
+          // Find an available room automatically
           const roomQuery = `
             SELECT dr.id AS room_id 
             FROM dormitory_rooms dr 
@@ -1002,7 +1128,6 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
 
           if (roomId) {
             // Find an available bed number
-            // This is simplified - you might need a more sophisticated bed assignment system
             const bedQuery = `
               SELECT MAX(CAST(bed_number AS INTEGER)) as max_bed
               FROM dormitory_allocations
@@ -1029,24 +1154,19 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
       }
     }
 
-    // 5. If day scholar, create transport allocation
-    if (studentType === "Day Scholar" && busRoute && busRoute !== "None") {
-      // Find current academic session
-      const sessionQuery = `SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1`;
-      const sessionResult = await client.query(sessionQuery);
-      const academicSessionId = sessionResult.rows[0]?.id;
+    // 6. If day scholar, create transport allocation
+    if (studentType === "Day Scholar" && busRoute && busRoute !== "None" && academicSessionId) {
+      // Get a pickup stop for the route (first one as default)
+      const stopQuery = `
+        SELECT id FROM route_stops 
+        WHERE route_id = $1 
+        ORDER BY stop_order ASC 
+        LIMIT 1
+      `;
+      const stopResult = await client.query(stopQuery, [busRoute]);
+      const pickupStopId = stopResult.rows[0]?.id;
 
-      if (academicSessionId) {
-        // Get a pickup stop for the route (first one as default)
-        const stopQuery = `
-          SELECT id FROM route_stops 
-          WHERE route_id = $1 
-          ORDER BY stop_order ASC 
-          LIMIT 1
-        `;
-        const stopResult = await client.query(stopQuery, [busRoute]);
-        const pickupStopId = stopResult.rows[0]?.id;
-
+      if (pickupStopId) {
         const transportAllocationQuery = `
           INSERT INTO transport_allocations (
             student_id, route_id, pickup_stop_id, academic_session_id, 
@@ -1072,6 +1192,7 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
         id: studentId,
         admissionNo,
         name: `${firstName} ${lastName}`,
+        subjectsEnrolled: selectedSubjects?.length || 0
       },
     });
   } catch (error) {
@@ -1091,10 +1212,18 @@ router.post("/add", authorizeRoles("admin"), async (req, res, next) => {
           success: false,
           error: "NEMIS UPI already exists",
         });
+      } else if (error.constraint?.includes("student_subjects_student_id_subject_id")) {
+        return res.status(400).json({
+          success: false,
+          error: "Duplicate subject enrollment detected",
+        });
       }
     }
 
-    next(error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to add student. " + (error.message || "Unknown error")
+    });
   } finally {
     client.release();
   }
@@ -1484,5 +1613,129 @@ router.post('/:studentId/subjects', authorizeRoles("admin"), async (req, res) =>
   }
 });
 
+
+router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const { enrollments } = req.body;
+
+    console.log(enrollments)
+
+    if (!Array.isArray(enrollments) || enrollments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Enrollment data must be a non-empty array"
+      });
+    }
+
+    // Prepare the values for multiple inserts
+    const subjectValues = [];
+    const subjectParams = [];
+    let paramIndex = 1;
+    
+    for (const enrollment of enrollments) {
+      const { studentId, subjectId, classId, academicSessionId, isElective = false, status = 'active' } = enrollment;
+      
+      // Validate required fields
+      if (!studentId || !subjectId || !classId || !academicSessionId) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields in enrollment data"
+        });
+      }
+      
+      subjectValues.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, CURRENT_DATE, $${paramIndex + 5})`);
+      subjectParams.push(
+        studentId,
+        subjectId,
+        classId,
+        academicSessionId,
+        isElective,
+        status
+      );
+      paramIndex += 6;
+    }
+    
+    // Execute the batch insert
+    const subjectEnrollmentQuery = `
+      INSERT INTO student_subjects (
+        student_id, subject_id, class_id, academic_session_id, 
+        is_elective, enrollment_date, status
+      ) VALUES ${subjectValues.join(', ')}
+      ON CONFLICT (student_id, subject_id, academic_session_id) 
+      DO UPDATE SET 
+        class_id = EXCLUDED.class_id,
+        is_elective = EXCLUDED.is_elective,
+        status = EXCLUDED.status,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING id
+    `;
+    
+    const enrollmentResult = await client.query(subjectEnrollmentQuery, subjectParams);
+      console.log(enrollmentResult)
+    // Optionally assign teachers based on existing teacher_subjects mappings
+    for (const enrollment of enrollments) {
+      const assignTeachersQuery = `
+        UPDATE student_subjects ss
+        SET teacher_id = ts.teacher_id
+        FROM teacher_subjects ts
+        WHERE ss.student_id = $1
+        AND ss.subject_id = $2
+        AND ss.class_id = $3
+        AND ss.academic_session_id = $4
+        AND ts.subject_id = ss.subject_id
+        AND ts.class_id = ss.class_id
+        AND ts.academic_session_id = ss.academic_session_id
+      `;
+      
+      await client.query(assignTeachersQuery, [
+        enrollment.studentId, 
+        enrollment.subjectId,
+        enrollment.classId,
+        enrollment.academicSessionId
+      ]);
+    }
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      success: true,
+      message: "Student subject enrollments created successfully",
+      data: {
+        count: enrollmentResult.rowCount,
+        enrollmentIds: enrollmentResult.rows.map(row => row.id)
+      }
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error enrolling subjects:", error);
+
+    // Provide specific error messages
+    if (error.code === "23505") {
+      // Unique constraint violation
+      return res.status(400).json({
+        success: false,
+        error: "Duplicate enrollment detected"
+      });
+    } else if (error.code === "23503") {
+      // Foreign key violation
+      return res.status(400).json({
+        success: false,
+        error: "Invalid student, subject, class, or academic session ID"
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to enroll subjects: " + (error.message || "Unknown error")
+    });
+  } finally {
+    client.release();
+  }
+});
 
 export default router;

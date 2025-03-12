@@ -49,7 +49,7 @@ router.get('/classes', authorizeRoles('admin', 'teacher', 'staff'), async (req, 
 router.get('/subjects/:classId', authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
   try {
     const { classId } = req.params;
-    
+      console.log("classId", classId)
     const subjects = await pool.query(
       `SELECT s.*, t.first_name || ' ' || t.last_name as teacher_name
        FROM subjects s
@@ -471,7 +471,7 @@ router.get('/current-session', authorizeRoles('admin', 'teacher', 'staff'), asyn
     const currentSession = await pool.query(
       `SELECT * FROM academic_sessions WHERE is_current = true LIMIT 1`
     );
-    
+
     if (currentSession.rows.length === 0) {
       return res.status(404).json({ msg: 'No current academic session found' });
     }

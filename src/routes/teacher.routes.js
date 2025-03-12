@@ -61,28 +61,30 @@ router.use(authenticateToken);
 // Get all teachers with comprehensive information
 router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, next) => {
     try {
+        // First, get the current academic session
         const currentSessionQuery = `
-            SELECT id 
-            FROM academic_sessions 
-            WHERE is_current = true 
+            SELECT id
+            FROM academic_sessions
+            WHERE is_current = true
             LIMIT 1
         `;
-
         const currentSessionResult = await pool.query(currentSessionQuery);
         const currentSessionId = currentSessionResult.rows[0]?.id;
-
+       
+        // Return error if no current session exists
         if (!currentSessionId) {
             return res.status(400).json({
                 success: false,
                 error: 'No current academic session found'
             });
         }
-
+       
+        // Main query to get teacher data with schedule and load information
         const query = `
             WITH daily_classes AS (
-                SELECT 
+                SELECT
                     tt.teacher_id,
-                    CASE tt.day_of_week 
+                    CASE tt.day_of_week
                         WHEN 1 THEN 'Monday'
                         WHEN 2 THEN 'Tuesday'
                         WHEN 3 THEN 'Wednesday'
@@ -100,30 +102,41 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
                             'room', COALESCE(tt.room_number, 'N/A')
                         )
                     ) AS classes
-                FROM 
+                FROM
                     timetable tt
-                JOIN 
+                JOIN
                     classes c ON tt.class_id = c.id
-                JOIN 
+                JOIN
                     subjects s ON tt.subject_id = s.id
                 WHERE
                     tt.academic_session_id = $1
-                GROUP BY 
+                GROUP BY
                     tt.teacher_id, day_name
             ),
-            teacher_load AS (
-                SELECT 
-                    teacher_id, 
-                    COUNT(*) AS current_load
-                FROM 
+            teacher_hour_load AS (
+                SELECT
+                    teacher_id,
+                    SUM(EXTRACT(EPOCH FROM (end_time - start_time))/3600) AS hours_per_week,
+                    COUNT(*) AS class_sessions
+                FROM
+                    timetable tt
+                WHERE
+                    tt.academic_session_id = $1
+                GROUP BY
+                    teacher_id
+            ),
+            subject_assignments AS (
+                SELECT
+                    teacher_id,
+                    COUNT(*) AS assigned_subjects
+                FROM
                     teacher_subjects ts
                 WHERE
                     ts.academic_session_id = $1
-                GROUP BY 
+                GROUP BY
                     teacher_id
             )
-
-            SELECT 
+            SELECT
                 t.id,
                 (t.first_name || ' ' || t.last_name) AS name,
                 t.photo_url AS photo,
@@ -134,8 +147,10 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
                 t.subject_specialization AS subjects,
                 t.subject_specialization AS qualifications,
                 t.joining_date AS "joinDate",
-                COALESCE(tl.current_load, 0) AS "currentLoad",
-                30 AS "maxLoad",
+                COALESCE(thl.hours_per_week, 0) AS "currentLoad",
+                COALESCE(thl.class_sessions, 0) AS "classSessions",
+                COALESCE(sa.assigned_subjects, 0) AS "subjectAssignments",
+                40 AS "maxLoad",
                 (
                     SELECT json_agg(
                         json_build_object(
@@ -146,18 +161,22 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
                     FROM daily_classes dc
                     WHERE dc.teacher_id = t.id
                 ) AS schedule
-            FROM 
+            FROM
                 teachers t
-            LEFT JOIN 
-                teacher_load tl ON t.id = tl.teacher_id
-            WHERE 
+            LEFT JOIN
+                teacher_hour_load thl ON t.id = thl.teacher_id
+            LEFT JOIN
+                subject_assignments sa ON t.id = sa.teacher_id
+            WHERE
                 t.status = 'active'
-            ORDER BY 
+            ORDER BY
                 t.id
         `;
-
+       
+        // Execute the query with the current session ID
         const result = await pool.query(query, [currentSessionId]);
-        
+       
+        // Return the results
         res.json({
             success: true,
             count: result.rows.length,
