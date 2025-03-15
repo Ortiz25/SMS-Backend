@@ -52,7 +52,7 @@ const limiter = rateLimit({
     windowMs: RATE_LIMIT_WINDOW_MS,
     max: RATE_LIMIT_MAX_REQUESTS
 });
-app.use(limiter);
+//app.use(limiter);
 
 // Routes
 app.use('/api/auth', authRoutes);
