@@ -34,6 +34,7 @@ import inventoryRoutes from "./src/routes/inventory.routes.js"
 import financeRoutes from "./src/routes/finance.routes.js"
 import yearlyRoutes from "./src/routes/yearlyAttendance.js"
 import { createUserModel } from './src/models/userModel.js';
+import passwordMgt from "./src/routes/passwordMgt.routes.js"
 
 const userModel = createUserModel();
 
@@ -84,6 +85,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/yearly', yearlyRoutes);
+app.use('/api/password', passwordMgt);
 
 
 

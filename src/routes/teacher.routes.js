@@ -337,14 +337,17 @@ router.post('/',
                 certifications,
                 experience,
                 status = 'active',
+                gender, // Extract gender
                 documents
             } = req.body;
-            console.log(req.body)
+
+            console.log(req.body);
+
             // Validate required fields
             const requiredFields = [
                 'first_name', 'last_name', 'email', 
                 'phone_primary', 'tsc_number', 
-                'joining_date', 'employment_type'
+                'joining_date', 'employment_type', 'gender' // Added gender validation
             ];
             
             for (let field of requiredFields) {
@@ -354,6 +357,15 @@ router.post('/',
                         error: `Missing required field: ${field}`
                     });
                 }
+            }
+
+            // Validate gender
+            const validGenders = ['male', 'female', 'other'];
+            if (!validGenders.includes(gender.toLowerCase())) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid gender. Allowed values: male, female, other'
+                });
             }
 
             // Generate staff ID
@@ -414,10 +426,11 @@ router.post('/',
                     experience,
                     documents,
                     photo_url,
-                    status
+                    status,
+                    gender
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 
-                    $11, $12, $13, $14, $15, $16, $17, $18
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19
                 ) RETURNING id
             `;
 
@@ -439,7 +452,8 @@ router.post('/',
                 experience,
                 JSON.stringify(documentDetails),
                 photoUrl,
-                status
+                status,
+                gender.toLowerCase() // Store gender in lowercase
             ];
 
             const teacherResult = await client.query(
@@ -458,7 +472,8 @@ router.post('/',
                 data: {
                     id: teacherId,
                     staff_id: staffId,
-                    name: `${first_name} ${last_name}`
+                    name: `${first_name} ${last_name}`,
+                    gender: gender.toLowerCase()
                 }
             });
         } catch (error) {
@@ -481,6 +496,7 @@ router.post('/',
         }
     }
 );
+
 
 // Get available substitute teachers for a date range
 router.get('/check/available-substitutes', authorizeRoles("admin", "librarian", "teacher", "student"),  async (req, res) => {
@@ -664,5 +680,23 @@ router.put('/:id',
         }
     }
 );
+
+router.delete("/:id", authorizeRoles("admin"), async (req, res) => {
+    const { id } = req.params;
+      console.log(id)
+    try {
+      // Delete the teacher record
+      const result = await pool.query("DELETE FROM teachers WHERE id = $1 RETURNING *", [id]);
+  
+      if (result.rowCount === 0) {
+        return res.status(404).json({ message: "Teacher not found" });
+      }
+  
+      res.status(200).json({ message: "Teacher deleted successfully", deletedTeacher: result.rows[0] });
+    } catch (error) {
+      console.error("Error deleting teacher:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
 
 export default router;

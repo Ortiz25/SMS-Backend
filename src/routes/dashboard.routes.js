@@ -476,9 +476,12 @@ router.get("/summary", async (req, res, next) => {
           FROM students
         `);
 
-        // Get basic teacher statistics
+        // Get basic teacher statistics with gender breakdown
         const teacherStatsResult = await client.query(`
-          SELECT COUNT(*) as total_teachers
+          SELECT 
+            COUNT(*) as total_teachers,
+            COUNT(CASE WHEN gender = 'male' THEN 1 END) as male_teachers,
+            COUNT(CASE WHEN gender = 'female' THEN 1 END) as female_teachers
           FROM teachers
         `);
 
@@ -584,11 +587,15 @@ router.get("/summary", async (req, res, next) => {
         FROM students
       `);
 
-      // Get teacher statistics
+      // Get teacher statistics with gender breakdown
       const teacherStatsResult = await client.query(`
         SELECT
           COUNT(*) as total_teachers,
-          COUNT(CASE WHEN status = 'active' THEN 1 END) as active_teachers
+          COUNT(CASE WHEN gender = 'male' THEN 1 END) as male_teachers,
+          COUNT(CASE WHEN gender = 'female' THEN 1 END) as female_teachers,
+          COUNT(CASE WHEN status = 'active' THEN 1 END) as active_teachers,
+          COUNT(CASE WHEN status = 'active' AND gender = 'male' THEN 1 END) as active_male_teachers,
+          COUNT(CASE WHEN status = 'active' AND gender = 'female' THEN 1 END) as active_female_teachers
         FROM teachers
       `);
 
@@ -820,6 +827,19 @@ router.get("/summary", async (req, res, next) => {
         `, [currentSession.id]);
       }
 
+      // Get teacher stats by department
+      const teachersByDepartmentResult = await client.query(`
+        SELECT 
+          department,
+          COUNT(*) as total,
+          COUNT(CASE WHEN gender = 'male' THEN 1 END) as male,
+          COUNT(CASE WHEN gender = 'female' THEN 1 END) as female
+        FROM teachers
+        WHERE status = 'active'
+        GROUP BY department
+        ORDER BY total DESC
+      `);
+
       // Commit transaction
       await client.query("COMMIT");
 
@@ -828,6 +848,7 @@ router.get("/summary", async (req, res, next) => {
         academic_session: currentSession,
         student_stats: studentStatsResult.rows[0],
         teacher_stats: teacherStatsResult.rows[0],
+        teachers_by_department: teachersByDepartmentResult.rows,
         class_stats: classStatsResult.rows[0],
         attendance_today: attendanceResult.rows[0],
         fee_summary: feeResult.rows[0],

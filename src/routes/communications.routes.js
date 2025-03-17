@@ -1,8 +1,22 @@
-// routes/communicationRoutes.js
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import pool from '../config/database.js';
 import { authenticateToken, authorizeRoles } from '../middleware/auth.js';
 import { body, validationResult } from 'express-validator';
+import { Resend } from 'resend';
+import { MailerSend, EmailParams, Sender, Recipient } from "mailersend";
+
+// Initialize Resend with your API key
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+
+const mailerSend = new MailerSend({
+  apiKey: process.env.API_KEY,
+});
+
+
+
 
 
 const router = express.Router();
@@ -167,6 +181,8 @@ router.get('/emails', authorizeRoles('admin', 'teacher', 'staff'), async (req, r
 });
 
 // Send email
+
+
 router.post('/emails',
   authorizeRoles('admin', 'teacher', 'staff'),
   [
@@ -193,75 +209,161 @@ router.post('/emails',
       // Start a database transaction
       await pool.query('BEGIN');
       
-      // Handle different recipient types
+      // Handle different recipient types and collect target emails
+      let targetEmails = [];
+      
       if (recipientType === 'individual' && Array.isArray(recipientEmails)) {
-        // Send to multiple individual recipients
-        for (const email of recipientEmails) {
-          await pool.query(`
-            INSERT INTO communication_logs
-              (sender_id, recipient_type, recipient_phone, message, communication_type, status)
-            VALUES
-              ($1, 'individual', $2, $3, 'email', 'pending')
-          `, [senderId, email, `Subject: ${subject}\n\n${message}`]);
-        }
-      } else {
-        // Send to a group (class, department, all)
-        await pool.query(`
+        // Use provided individual emails
+        targetEmails = recipientEmails.filter(email => email.trim() !== '');
+      } else if (recipientType === 'all') {
+        // Get all user emails from database
+        const allUsers = await pool.query('SELECT email FROM users WHERE active = true');
+        targetEmails = allUsers.rows.map(user => user.email);
+      } else if (recipientType === 'class') {
+        // Get emails for a specific class
+        const classUsers = await pool.query(`
+          SELECT u.email 
+          FROM users u
+          JOIN class_enrollments ce ON u.id = ce.user_id
+          WHERE ce.class_id = $1 AND u.active = true
+        `, [recipientGroupId]);
+        targetEmails = classUsers.rows.map(user => user.email);
+      } else if (recipientType === 'department') {
+        // Get emails for a specific department
+        const deptUsers = await pool.query(`
+          SELECT u.email 
+          FROM users u
+          JOIN user_departments ud ON u.id = ud.user_id
+          WHERE ud.department_id = $1 AND u.active = true
+        `, [recipientGroupId]);
+        targetEmails = deptUsers.rows.map(user => user.email);
+      }
+      
+      if (targetEmails.length === 0) {
+        await pool.query('ROLLBACK');
+        return res.status(400).json({ message: 'No recipients found' });
+      }
+      
+      // Log emails to database first
+      const loggedEmails = [];
+      for (const email of targetEmails) {
+        // We'll truncate email addresses if they're too long for the recipient_phone column (VARCHAR(20))
+        const truncatedEmail = email.substring(0, 20);
+        
+        const result = await pool.query(`
           INSERT INTO communication_logs
-            (sender_id, recipient_type, recipient_group_id, message, communication_type, status)
+            (sender_id, recipient_type, recipient_phone, message, communication_type, status)
           VALUES
             ($1, $2, $3, $4, 'email', 'pending')
-        `, [senderId, recipientType, recipientGroupId, `Subject: ${subject}\n\n${message}`]);
+          RETURNING id
+        `, [senderId, recipientType, truncatedEmail, `Subject: ${subject}\n\n${message}`]);
+        
+        if (result.rows && result.rows.length > 0) {
+          loggedEmails.push({
+            id: result.rows[0].id,
+            email: email
+          });
+        }
       }
+      
+      let emailSendingSucceeded = false;
+      
+      // Try to send emails via MailerSend
+      if (process.env.MAILERSEND_API_KEY) {
+        try {
+          // Initialize MailerSend
+          const mailerSend = new MailerSend({
+            apiKey: process.env.MAILERSEND_API_KEY,
+          });
+          
+          // Set sender from environment or use default
+          const senderEmail = process.env.MAILERSEND_FROM_EMAIL || 'noreply@example.com';
+          const senderName = process.env.MAILERSEND_FROM_NAME || 'School Management System';
+          const sentFrom = new Sender(senderEmail, senderName);
+          
+          // Check if we need to send individual or batch emails
+          if (targetEmails.length === 1) {
+            // Send to a single recipient
+            const emailParams = new EmailParams()
+              .setFrom(sentFrom)
+              .setTo([new Recipient(targetEmails[0])])
+              .setReplyTo(sentFrom)
+              .setSubject(subject)
+              .setHtml(message.replace(/\n/g, '<br>'))
+              .setText(message);
+            
+            await mailerSend.email.send(emailParams);
+            emailSendingSucceeded = true;
+            console.log(`Email sent successfully to ${targetEmails[0]}`);
+          } else {
+            // Send to multiple recipients as bulk
+            const bulkEmails = [];
+            
+            // Create individual email for each recipient
+            for (const email of targetEmails) {
+              const emailParams = new EmailParams()
+                .setFrom(sentFrom)
+                .setTo([new Recipient(email)]) // Single recipient in array
+                .setReplyTo(sentFrom)
+                .setSubject(subject)
+                .setHtml(message.replace(/\n/g, '<br>'))
+                .setText(message);
+              
+              bulkEmails.push(emailParams);
+            }
+            
+            // Send emails in bulk
+            if (bulkEmails.length > 0) {
+              await mailerSend.email.sendBulk(bulkEmails);
+              emailSendingSucceeded = true;
+              console.log(`Emails sent successfully to ${bulkEmails.length} recipients`);
+            }
+          }
+        } catch (mailError) {
+          console.error('MailerSend error:', mailError);
+          if (mailError.statusCode === 422) {
+            console.error('Validation error:', mailError.body?.message);
+          }
+          // Continue execution - we'll mark the emails as 'queued' instead of 'sent'
+        }
+      } else {
+        console.log('MailerSend API key not configured, skipping actual email sending');
+      }
+      
+      // Update status based on whether email sending succeeded
+      await pool.query(`
+        UPDATE communication_logs 
+        SET status = $1, delivery_time = $2
+        WHERE id = ANY($3)
+      `, [
+        emailSendingSucceeded ? 'sent' : 'queued', 
+        emailSendingSucceeded ? 'NOW()' : null,
+        loggedEmails.map(item => item.id)
+      ]);
       
       // Commit the transaction
       await pool.query('COMMIT');
       
-      // In a real application, you would queue these emails for sending here
-      // ...
-
-      res.status(200).json({ message: 'Emails queued for sending' });
+      const responseMessage = emailSendingSucceeded 
+        ? 'Emails sent successfully' 
+        : 'Emails queued for later delivery (Email service not configured)';
+      
+      res.status(200).json({ 
+        message: responseMessage, 
+        count: targetEmails.length,
+        status: emailSendingSucceeded ? 'sent' : 'queued'
+      });
     } catch (error) {
       // Rollback on error
       await pool.query('ROLLBACK');
       console.error('Error sending email:', error);
-      res.status(500).json({ message: 'Server error while sending email' });
+      res.status(500).json({ 
+        message: 'Server error while sending email',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }
   }
 );
-
-// Get SMS messages
-router.get('/sms', authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
-  try {
-    const query = `
-      SELECT 
-        cl.id,
-        u.username as sender_name,
-        cl.recipient_phone,
-        cl.message,
-        cl.created_at,
-        cl.status,
-        cl.delivery_time,
-        cl.cost
-      FROM 
-        communication_logs cl
-      JOIN 
-        users u ON cl.sender_id = u.id
-      WHERE 
-        cl.communication_type = 'sms'
-      ORDER BY 
-        cl.created_at DESC
-      LIMIT 50
-    `;
-    
-    const result = await pool.query(query);
-    
-    res.status(200).json(result.rows);
-  } catch (error) {
-    console.error('Error fetching SMS messages:', error);
-    res.status(500).json({ message: 'Server error while fetching SMS messages' });
-  }
-});
 
 // Send SMS
 router.post('/sms',
