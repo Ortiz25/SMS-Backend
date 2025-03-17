@@ -41,7 +41,7 @@ router.post("/forgotpassword", async (req, res) => {
       [token, expiresAt, userId]
     );
  
-    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/resetpassword?token=${token}`;
+    const resetLink = `${process.env.FRONTEND_URL || 'http://sms.teqova.biz/'}/resetpassword?token=${token}`;
  
     // Email content
     const subject = "Password Reset Request";
