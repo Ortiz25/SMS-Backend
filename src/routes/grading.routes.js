@@ -483,4 +483,43 @@ router.get('/current-session', authorizeRoles('admin', 'teacher', 'staff'), asyn
   }
 });
 
+/**
+ * @route   GET /api/grading/exam-subjects/:classId/:examId
+ * @desc    Get subjects with scheduled exams for a specific class and examination
+ * @access  Private
+ */
+router.get('/exam-subjects/:classId/:examId', authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
+  try {
+    const { classId, examId } = req.params;
+
+    const subjects = await pool.query(
+      `SELECT DISTINCT s.*, 
+              COALESCE(t.first_name || ' ' || t.last_name, 'No Teacher Assigned') AS teacher_name
+       FROM subjects s
+       JOIN exam_schedules es ON s.id = es.subject_id
+       JOIN examinations e ON es.examination_id = e.id
+       LEFT JOIN teacher_subjects ts ON s.id = ts.subject_id 
+                                      AND ts.class_id = es.class_id 
+                                      AND ts.academic_session_id = e.academic_session_id
+       LEFT JOIN teachers t ON ts.teacher_id = t.id
+       WHERE es.class_id = $1 
+         AND es.examination_id = $2
+         AND es.exam_date <= CURRENT_DATE  -- Ensure the exam has already occurred
+       ORDER BY s.name`,
+      [classId, examId]
+    );
+
+    if (subjects.rows.length === 0) {
+      return res.status(404).json({ msg: "No subjects found for this class and exam." });
+    }
+
+    res.json(subjects.rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+});
+
+
+
 export default router
