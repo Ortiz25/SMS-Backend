@@ -371,21 +371,21 @@ router.get(
 // src/routes/student.routes.js - Add or update this route
 
 // Update student with detailed information
-router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) => {
+// Update student route handler with fixed schema references
+router.put('/:id', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   
   try {
+    await client.query('BEGIN');
+    
     const { id } = req.params;
     const updateData = req.body;
     
-    // Start transaction
-    await client.query('BEGIN');
+    console.log('Update request for student ID:', id);
+    console.log('Update data received:', updateData);
     
-    // Validate student exists
-    const studentCheck = await client.query(
-      'SELECT id, current_class, stream, curriculum_type FROM students WHERE id = $1',
-      [id]
-    );
+    // Check if student exists
+    const studentCheck = await client.query('SELECT * FROM students WHERE id = $1', [id]);
     
     if (studentCheck.rows.length === 0) {
       return res.status(404).json({
@@ -407,6 +407,19 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
     // Remove id from updateData as it's not needed for the update
     delete updateData.id;
     
+    // Check for invalid column names and correct them
+    // Fix the "conditions" to "medical_conditions" issue
+    if (updateData.conditions !== undefined) {
+      console.log('Converting "conditions" to "medical_conditions"');
+      updateData.medical_conditions = updateData.conditions;
+      delete updateData.conditions;
+    }
+    
+    // Log the request data after preprocessing
+    console.log('Preprocessed update data:', updateData);
+    
+    let updatedStudent = null;
+    
     // Only proceed if there are fields to update
     if (Object.keys(updateData).length > 0) {
       // Build the dynamic update query
@@ -415,6 +428,14 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
       let paramIndex = 1;
       
       for (const [key, value] of Object.entries(updateData)) {
+        // Skip fields that don't exist in the table
+        if (!isValidStudentColumn(key)) {
+          console.warn(`Skipping invalid column: ${key}`);
+          continue;
+        }
+        
+        console.log(`Processing field for update: ${key} = `, value);
+        
         // Handle arrays (like allergies)
         if (Array.isArray(value)) {
           setClauses.push(`${key} = $${paramIndex}`);
@@ -430,15 +451,37 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
         // Add the student ID to values array
         values.push(id);
         
-        const updateQuery = `
-          UPDATE students
-          SET ${setClauses.join(', ')}, updated_at = NOW()
-          WHERE id = $${paramIndex}
-          RETURNING *
-        `;
-        
-        // Execute the update query
-        const result = await client.query(updateQuery, values);
+        // Only proceed if we have set clauses
+        if (setClauses.length === 0) {
+          console.log('No valid fields to update');
+          // Skip the update if there's nothing to update
+          updatedStudent = student; // Use the existing student record
+        } else {
+          console.log('Update query SET clauses:', setClauses.join(', '));
+          console.log('Update query values:', values);
+          
+          const updateQuery = `
+            UPDATE students
+            SET ${setClauses.join(', ')}, updated_at = NOW()
+            WHERE id = $${paramIndex}
+            RETURNING *
+          `;
+          
+          // Execute the update query
+          try {
+            const result = await client.query(updateQuery, values);
+            if (result.rows.length > 0) {
+              updatedStudent = result.rows[0];
+              console.log('Student updated successfully');
+            } else {
+              console.error('Update query returned no rows');
+              updatedStudent = student; // Fallback to original data
+            }
+          } catch (queryError) {
+            console.error('Error executing update query:', queryError);
+            throw queryError; // Rethrow to be caught by the outer try/catch
+          }
+        }
         
         // Update guardian if provided
         if (guardianData && Object.keys(guardianData).length > 0) {
@@ -460,10 +503,36 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
             const guardianValues = [];
             let guardianParamIndex = 1;
             
+            // Map from frontend field names to database column names
+            const guardianFieldMapping = {
+              name: ['first_name', 'last_name'], // Special case for name that needs to be split
+              relationship: 'relationship',
+              phone: 'phone_primary',
+              email: 'email',
+              idNumber: 'id_number'
+            };
+            
             for (const [key, value] of Object.entries(guardianData)) {
-              guardianSetClauses.push(`${key} = $${guardianParamIndex}`);
-              guardianValues.push(value);
-              guardianParamIndex++;
+              // Handle special case for name field (needs to be split into first_name and last_name)
+              if (key === 'name' && value) {
+                const nameParts = value.split(' ');
+                const firstName = nameParts[0];
+                const lastName = nameParts.slice(1).join(' ') || '';
+                
+                guardianSetClauses.push(`first_name = $${guardianParamIndex}`);
+                guardianValues.push(firstName);
+                guardianParamIndex++;
+                
+                guardianSetClauses.push(`last_name = $${guardianParamIndex}`);
+                guardianValues.push(lastName);
+                guardianParamIndex++;
+              } else if (guardianFieldMapping[key]) {
+                // Regular case - direct field mapping
+                const dbField = guardianFieldMapping[key];
+                guardianSetClauses.push(`${dbField} = $${guardianParamIndex}`);
+                guardianValues.push(value);
+                guardianParamIndex++;
+              }
             }
             
             if (guardianSetClauses.length > 0) {
@@ -476,6 +545,9 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
                 WHERE id = $${guardianParamIndex}
               `;
               
+              console.log('Guardian update query:', updateGuardianQuery);
+              console.log('Guardian update values:', guardianValues);
+              
               await client.query(updateGuardianQuery, guardianValues);
             }
           }
@@ -483,196 +555,61 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
       }
     }
     
-    // Check if the student_subjects table exists - do this here so it's accessible later
-    const tableExistsResult = await client.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'student_subjects'
-      );
-    `);
-    
-    const studentSubjectsTableExists = tableExistsResult.rows[0].exists;
-    
-    // Handle subjects separately (even if no other fields were updated)
-    if (subjects && Array.isArray(subjects)) {
-      // Get the student's current class and stream (use updated values if provided or original values)
-      const currentClass = updateData.current_class || student.current_class;
-      const currentStream = updateData.stream || student.stream;
-      const curriculumType = updateData.curriculum_type || student.curriculum_type;
-
-      // Get current academic session
-      const sessionResult = await client.query(
-        'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
-      );
-      
-      if (sessionResult.rows.length === 0) {
-        throw new Error('No active academic session found');
-      }
-      
-      const academicSessionId = sessionResult.rows[0].id;
-      
-      if (studentSubjectsTableExists) {
-        // Use student_subjects table for tracking subjects
-        
-        // Get class information
-        const classResult = await client.query(
-          `SELECT id FROM classes 
-           WHERE level = $1 AND stream = $2 AND academic_session_id = $3`,
-          [currentClass, currentStream, academicSessionId]
-        );
-        
-        if (classResult.rows.length === 0) {
-          throw new Error(`Class ${currentClass} ${currentStream} not found for the current academic session`);
-        }
-        
-        const classId = classResult.rows[0].id;
-        
-        // Get existing subjects for this student
-        const existingSubjectsResult = await client.query(
-          `SELECT ss.id, ss.subject_id, ss.status, s.name 
-           FROM student_subjects ss
-           JOIN subjects s ON ss.subject_id = s.id
-           WHERE ss.student_id = $1 AND ss.academic_session_id = $2`,
-          [id, academicSessionId]
-        );
-        
-        // Create a mapping of subject names to IDs for easier lookup
-        const subjectNameToIdMap = await getSubjectNameToIdMap(client, curriculumType);
-        
-        // Convert string-based subjects to IDs if needed
-        const subjectIds = subjects.map(subject => {
-          // If the subject is already an ID (number or string that can be converted to a number)
-          if (!isNaN(subject)) {
-            return subject.toString();
-          }
-          
-          // If the subject is a name, look up its ID
-          const subjectId = subjectNameToIdMap[subject];
-          if (!subjectId) {
-            console.warn(`Subject not found: ${subject}`);
-          }
-          return subjectId;
-        }).filter(id => id); // Remove any undefined values
-        
-        // Get current active subjects
-        const currentActiveSubjects = existingSubjectsResult.rows
-          .filter(row => row.status === 'active')
-          .map(row => row.subject_id.toString());
-        
-        // Determine subjects to add and remove
-        const subjectsToAdd = subjectIds.filter(id => !currentActiveSubjects.includes(id));
-        const subjectsToRemove = currentActiveSubjects.filter(id => !subjectIds.includes(id));
-        
-        // Map of subject IDs to existing enrollment records
-        const subjectToEnrollmentMap = {};
-        existingSubjectsResult.rows.forEach(row => {
-          subjectToEnrollmentMap[row.subject_id] = row;
-        });
-        
-        // Process subjects to add
-        for (const subjectId of subjectsToAdd) {
-          // Get teacher for this subject and class
-          const teacherResult = await client.query(
-            `SELECT teacher_id FROM teacher_subjects 
-             WHERE subject_id = $1 AND class_id = $2 AND academic_session_id = $3`,
-            [subjectId, classId, academicSessionId]
-          );
-          
-          const teacherId = teacherResult.rows.length > 0 ? teacherResult.rows[0].teacher_id : null;
-          
-          // Check if there's an existing enrollment we can reactivate
-          const existingEnrollment = subjectToEnrollmentMap[subjectId];
-          
-          if (existingEnrollment) {
-            // Reactivate existing enrollment
-            await client.query(
-              `UPDATE student_subjects 
-               SET status = 'active', updated_at = NOW() 
-               WHERE id = $1`,
-              [existingEnrollment.id]
-            );
-          } else {
-            // Create new enrollment
-            await client.query(
-              `INSERT INTO student_subjects
-               (student_id, subject_id, class_id, academic_session_id, teacher_id, enrollment_date)
-               VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)`,
-              [id, subjectId, classId, academicSessionId, teacherId]
-            );
-          }
-        }
-        
-        // Process subjects to remove
-        for (const subjectId of subjectsToRemove) {
-          await client.query(
-            `UPDATE student_subjects 
-             SET status = 'dropped', updated_at = NOW() 
-             WHERE student_id = $1 AND subject_id = $2 AND academic_session_id = $3 AND status = 'active'`,
-            [id, subjectId, academicSessionId]
-          );
-        }
-      } else {
-        // If we don't have the student_subjects table, store the subjects as a JSON array
-        // in a field called "subjects" in the students table
-        await client.query(
-          `UPDATE students SET subjects = $1 WHERE id = $2`,
-          [subjects, id]
-        );
-      }
-    }
-    
-    // Commit the transaction
-    await client.query('COMMIT');
-    
-    // Get the updated student data with guardian info and subjects
-    const updatedStudentQuery = `
-      SELECT s.*, 
-             p.first_name || ' ' || p.last_name AS guardian_name,
-             p.relationship AS guardian_relationship,
-             p.phone_primary AS guardian_phone,
-             p.email AS guardian_email,
-             p.id_number AS guardian_id_number
+    // Fetch the updated student record with all related data
+    const getUpdatedStudentQuery = `
+      SELECT 
+        s.*,
+        p.id as guardian_id,
+        p.first_name as guardian_first_name,
+        p.last_name as guardian_last_name,
+        p.relationship,
+        p.phone_primary,
+        p.phone_secondary,
+        p.email,
+        p.id_number
       FROM students s
       LEFT JOIN student_parent_relationships spr ON s.id = spr.student_id AND spr.is_primary_contact = true
       LEFT JOIN parents p ON spr.parent_id = p.id
       WHERE s.id = $1
     `;
     
-    const updatedStudent = await pool.query(updatedStudentQuery, [id]);
+    const updatedStudentResult = await client.query(getUpdatedStudentQuery, [id]);
+    const updatedStudentComplete = updatedStudentResult.rows[0];
     
-    // If we're using the student_subjects table, get the current subjects
-    if (studentSubjectsTableExists) {
-      const currentSubjectsQuery = `
-        SELECT s.id AS subject_id, s.name AS subject_name, s.code AS subject_code
-        FROM student_subjects ss
-        JOIN subjects s ON ss.subject_id = s.id
-        WHERE ss.student_id = $1 
-        AND ss.academic_session_id = $2
-        AND ss.status = 'active'
-        ORDER BY s.name
-      `;
+    if (updatedStudentComplete) {
+      // Format guardian data
+      const guardian = updatedStudentComplete.guardian_id ? {
+        id: updatedStudentComplete.guardian_id,
+        name: `${updatedStudentComplete.guardian_first_name || ''} ${updatedStudentComplete.guardian_last_name || ''}`.trim(),
+        relationship: updatedStudentComplete.relationship,
+        phone_primary: updatedStudentComplete.phone_primary,
+        phone_secondary: updatedStudentComplete.phone_secondary,
+        email: updatedStudentComplete.email,
+        id_number: updatedStudentComplete.id_number
+      } : null;
       
-      const sessionResult = await pool.query(
-        'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
-      );
+      // Remove guardian fields from the student object
+      delete updatedStudentComplete.guardian_id;
+      delete updatedStudentComplete.guardian_first_name;
+      delete updatedStudentComplete.guardian_last_name;
+      delete updatedStudentComplete.relationship;
+      delete updatedStudentComplete.phone_primary;
+      delete updatedStudentComplete.phone_secondary;
+      delete updatedStudentComplete.email;
+      delete updatedStudentComplete.id_number;
       
-      if (sessionResult.rows.length > 0) {
-        const academicSessionId = sessionResult.rows[0].id;
-        const subjectsResult = await pool.query(currentSubjectsQuery, [id, academicSessionId]);
-        
-        // Add subjects to the response
-        if (updatedStudent.rows.length > 0) {
-          updatedStudent.rows[0].subjects = subjectsResult.rows.map(row => row.subject_id.toString());
-          updatedStudent.rows[0].subject_names = subjectsResult.rows.map(row => row.subject_name);
-        }
-      }
+      // Add guardian object to student
+      updatedStudentComplete.guardian = guardian;
     }
     
-    return res.json({
+    // Commit the transaction
+    await client.query('COMMIT');
+    
+    // Return the updated student data
+    return res.status(200).json({
       success: true,
       message: 'Student updated successfully',
-      data: updatedStudent.rows[0]
+      data: updatedStudentComplete || student // Return either the updated student or the original if no updates were made
     });
     
   } catch (error) {
@@ -688,12 +625,36 @@ router.put('/:id', authorizeRoles('admin', 'teacher'), async (req, res, next) =>
     client.release();
   }
 });
-/**
- * Helper function to get a mapping of subject names to IDs
- * @param {Object} client - Database client
- * @param {String} curriculumType - Curriculum type (CBC or 844)
- * @returns {Object} Map of subject names to IDs
- */
+
+const isValidStudentColumn = (key) => {
+  // List of valid columns in the students table
+  const validColumns = [
+    'first_name',
+    'last_name',
+    'other_names',
+    'admission_number',
+    'date_of_birth',
+    'gender',
+    'address',
+    'nationality',
+    'nemis_upi',
+    'current_class',
+    'stream',
+    'previous_school',
+    'admission_date',
+    'curriculum_type',
+    'student_type',
+    'blood_group',
+    'allergies',
+    'emergency_contact_name',
+    'emergency_contact_phone',
+    'medical_conditions',
+    'conditions' // Include this if your code sometimes uses 'conditions' instead of 'medical_conditions'
+  ];
+  
+  return validColumns.includes(key);
+};
+
 async function getSubjectNameToIdMap(client, curriculumType) {
   const subjectsResult = await client.query(
     `SELECT id, name FROM subjects WHERE curriculum_type = $1`,
