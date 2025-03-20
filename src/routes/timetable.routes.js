@@ -179,21 +179,67 @@ router.post(
     async (req, res) => {
       try {
         const { id } = req.params;
-        const {
+  
+        console.log("Timetable ID:", id);
+        let {
           subject_id,
           teacher_id,
           start_time,
           end_time,
-          room_number
+          room_number,
+          subject_name
         } = req.body;
-  
+        console.log("Request body:", req.body);
+        
+        // If subject_name is provided but subject_id is not, look up the subject_id by name
+        if (subject_name && (!subject_id || subject_id === "")) {
+          const subjectQuery = `
+            SELECT id FROM subjects 
+            WHERE name = $1
+          `;
+          
+          const subjectResult = await pool.query(subjectQuery, [subject_name]);
+          
+          if (subjectResult.rows.length === 0) {
+            return res.status(404).json({
+              success: false,
+              message: `Subject '${subject_name}' not found`
+            });
+          }
+          
+          subject_id = subjectResult.rows[0].id;
+          console.log(`Found subject_id ${subject_id} for subject '${subject_name}'`);
+        }
+        
+        // Convert empty strings to null for integer fields
+        subject_id = subject_id === "" ? null : subject_id;
+        teacher_id = teacher_id === "" ? null : teacher_id;
+        
+        // Validate that required integer fields are not null after conversion
+        if (subject_id === null || teacher_id === null) {
+          return res.status(400).json({
+            success: false,
+            message: "Subject ID and Teacher ID are required and must be integers"
+          });
+        }
+        
+        // Log parameters for debugging
+        console.log("Update parameters:", { 
+          id,
+          subject_id,
+          teacher_id,
+          room_number,
+          start_time,
+          end_time
+        });
+    
         // First get the current schedule to check for class_id and day_of_week
         const getCurrentQuery = `
           SELECT class_id, day_of_week, academic_session_id
           FROM timetable
           WHERE id = $1
         `;
-  
+    
         const currentResult = await pool.query(getCurrentQuery, [id]);
         
         if (currentResult.rows.length === 0) {
@@ -202,9 +248,9 @@ router.post(
             message: "Schedule entry not found"
           });
         }
-  
+    
         const { class_id, day_of_week, academic_session_id } = currentResult.rows[0];
-  
+    
         // Check for conflicts before update
         const conflictQuery = `
           SELECT 
@@ -229,7 +275,7 @@ router.post(
               (t.start_time, t.end_time) OVERLAPS ($7::time, $8::time)
             )
         `;
-  
+    
         const conflictResult = await pool.query(
           conflictQuery,
           [
@@ -243,7 +289,7 @@ router.post(
             end_time
           ]
         );
-  
+    
         // If conflicts exist, return error with details
         if (conflictResult.rows.length > 0) {
           const conflictTypes = conflictResult.rows.map(row => row.conflict_type);
@@ -258,14 +304,14 @@ router.post(
           if (conflictTypes.includes('room')) {
             conflictMessage += "Room is already booked at this time.";
           }
-  
+    
           return res.status(409).json({
             success: false,
             message: conflictMessage,
             conflicts: conflictResult.rows
           });
         }
-  
+    
         // Update the schedule entry
         const updateQuery = `
           UPDATE timetable
@@ -279,7 +325,7 @@ router.post(
           WHERE id = $6
           RETURNING id
         `;
-  
+    
         const result = await pool.query(
           updateQuery,
           [
@@ -291,14 +337,14 @@ router.post(
             id
           ]
         );
-  
+    
         if (result.rowCount === 0) {
           return res.status(404).json({
             success: false,
             message: "Schedule entry not found or not updated"
           });
         }
-  
+    
         return res.status(200).json({
           success: true,
           message: "Schedule updated successfully",

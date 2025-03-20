@@ -137,7 +137,6 @@ router.get(
   }
 );
 
-// GET all teachers
 // GET all teachers - fixed to match schema
 router.get(
     '/teachers',
@@ -290,11 +289,12 @@ router.get(
 // GET reference data (classes, teachers, subjects) in a single request
 router.get(
   '/reference-data',
-  authorizeRoles('admin', 'teacher', 'staff'),
+  
   async (req, res) => {
     try {
+      console.log("reached")
       const { academicSessionId } = req.query;
-      
+       
       // Start a transaction
       const client = await pool.connect();
       
