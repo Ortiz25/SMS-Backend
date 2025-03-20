@@ -338,6 +338,7 @@ router.get(
           error: "No active academic session found",
         });
       }
+      console.log(academicSessionId)
       
       // 1. Fetch attendance summary from attendance_summary table
       const summaryQuery = `
@@ -408,6 +409,8 @@ router.get(
         pool.query(recentQuery, [studentId, academicSessionId]),
         pool.query(monthlyQuery, [studentId, academicSessionId]),
       ]);
+
+      //console.log(summaryResult, recentResult, monthlyResult)
       
       // Format the monthly data for charts
       const monthlyData = monthlyResult.rows.map(row => {
