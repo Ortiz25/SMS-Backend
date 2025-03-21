@@ -453,5 +453,77 @@ router.patch('/:id/status', authorizeRoles("admin", "librarian", "teacher", "stu
     }
   });
 
+  // In your Express backend routes (e.g., routes/leaves.js)
+
+/**
+ * @route   POST /api/leaves/check-status-updates
+ * @desc    Check and update teacher statuses for completed leaves
+ * @access  Private (Admin)
+ */
+router.post('/check-status-updates',  authorizeRoles("admin", "librarian", "teacher", "student"), async (req, res) => {
+  try {
+    // Check if the user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only administrators can perform this operation' 
+      });
+    }
+
+    // Call the database function to restore teacher statuses
+    const result = await pool.query('SELECT restore_teacher_status_after_leave()');
+    
+    return res.json({ 
+      success: true, 
+      message: 'Teacher statuses updated successfully' 
+    });
+  } catch (error) {
+    console.error('Error updating teacher statuses:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error while updating teacher statuses' 
+    });
+  }
+});
+
+/**
+ * @route   GET /api/leaves/ending-today
+ * @desc    Get all leaves ending today
+ * @access  Private (Admin)
+ */
+router.get('/ending-today',  authorizeRoles("admin", "librarian", "teacher", "student"), async (req, res) => {
+  try {
+    // Check if the user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only administrators can access this information' 
+      });
+    }
+
+    const query = `
+      SELECT lr.*, t.first_name || ' ' || t.last_name AS teacher_name, lt.name AS leave_type_name 
+      FROM leave_requests lr
+      JOIN teachers t ON lr.teacher_id = t.id
+      JOIN leave_types lt ON lr.leave_type_id = lt.id
+      WHERE lr.status = 'approved' AND lr.end_date = CURRENT_DATE
+    `;
+    
+    const { rows } = await pool.query(query);
+    
+    return res.json({ 
+      success: true, 
+      count: rows.length,
+      results: rows
+    });
+  } catch (error) {
+    console.error('Error fetching leaves ending today:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error while fetching leaves' 
+    });
+  }
+});
+
 
 export default router

@@ -12,3 +12,13 @@ cron.schedule('0 1 * * *', async () => {
       console.error('Error in status restoration:', err);
     }
   });
+
+
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      await pool.query('SELECT restore_teacher_status_after_leave()');
+      console.log('Teacher Leave status restoration process completed');
+    } catch (err) {
+      console.error('Error in Leave status restoration:', err);
+    }
+  });
