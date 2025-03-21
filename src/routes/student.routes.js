@@ -233,10 +233,17 @@ router.get(
       `;
 
       // Add filters if needed
-      const { classId, stream, studentType } = req.query;
-      let whereClause = "s.status = 'active'";
+      const { classId, stream, studentType, status } = req.query;
+      let whereClause = "1=1"; // Changed from "s.status = 'active'" to "1=1" to include all statuses
       const values = [];
       let paramIndex = 1;
+      
+      // Add optional status filter
+      if (status) {
+        whereClause += ` AND s.status = $${paramIndex}`;
+        values.push(status);
+        paramIndex++;
+      }
       
       if (classId) {
         whereClause += ` AND s.current_class = (SELECT level FROM classes WHERE id = $${paramIndex})`;
