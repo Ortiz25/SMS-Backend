@@ -19,14 +19,14 @@ router.get(
       let whereClause = '';
       const queryParams = [];
       
-      if (academicSessionId) {
-        queryParams.push(academicSessionId);
+      if (academicSessionId && !isNaN(parseInt(academicSessionId))) {
+        queryParams.push(parseInt(academicSessionId));
         whereClause += `e.academic_session_id = $${queryParams.length}`;
       }
       
-      if (examTypeId) {
+      if (examTypeId && !isNaN(parseInt(examTypeId))) {
         if (whereClause) whereClause += ' AND ';
-        queryParams.push(examTypeId);
+        queryParams.push(parseInt(examTypeId));
         whereClause += `e.exam_type_id = $${queryParams.length}`;
       }
       
@@ -93,6 +93,83 @@ router.get(
     }
   }
 );
+
+router.get(
+  '/exam-types',
+  authorizeRoles('admin', 'teacher', 'staff'),
+  async (req, res) => {
+    try {
+      const { curriculumType } = req.query;
+      
+      let query = `
+        SELECT 
+          id, name, curriculum_type, category, weight_percentage, is_national_exam, grading_system_id
+        FROM 
+          exam_types
+      `;
+      
+      const queryParams = [];
+      
+      // Filter by curriculum type if provided
+      if (curriculumType) {
+        query += ` WHERE curriculum_type = $1`;
+        queryParams.push(curriculumType);
+      }
+      
+      query += ` ORDER BY curriculum_type, name`;
+      
+      const result = await pool.query(query, queryParams);
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Exam types fetched successfully',
+        data: result.rows
+      });
+    } catch (error) {
+      console.error('Error fetching exam types:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'An error occurred while fetching exam types',
+        error: error.message
+      });
+    }
+  }
+);
+
+// GET academic sessions (helper endpoint)
+router.get(
+  '/academic-sessions',
+  authorizeRoles('admin', 'teacher', 'staff'),
+  async (req, res) => {
+    try {
+      const query = `
+        SELECT 
+          id, year, term, start_date, end_date, is_current, status
+        FROM 
+          academic_sessions
+        ORDER BY 
+          year DESC, term ASC
+      `;
+      
+      const result = await pool.query(query);
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Academic sessions fetched successfully',
+        data: result.rows
+      });
+    } catch (error) {
+      console.error('Error fetching academic sessions:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'An error occurred while fetching academic sessions',
+        error: error.message
+      });
+    }
+  }
+);
+
+
 
 // GET examination by ID
 router.get(
