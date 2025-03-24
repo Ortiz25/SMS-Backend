@@ -11,7 +11,7 @@ router.use(authenticateToken);
 
 
 
-router.get('/studentstats',authorizeRoles("admin", "teacher"),  async (req, res) => {
+router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res) => {
   try {
     console.log("Stats route hit");
     
@@ -63,99 +63,123 @@ router.get('/studentstats',authorizeRoles("admin", "teacher"),  async (req, res)
       if (sessionsResult.rows.length > 0) {
         const { current_session_id, current_start_date, previous_session_id } = sessionsResult.rows[0];
         
-        // Now try to get student statistics
+        // Get student statistics and attendance
         try {
-          // Simplify the query for testing
-          const simpleStatsQuery = `
+          const statsQuery = `
+            WITH student_counts AS (
+              SELECT 
+                COUNT(*) AS total_students,
+                COUNT(*) FILTER (WHERE admission_date >= $1) AS new_students
+              FROM students
+            ),
+            current_attendance AS (
+              SELECT 
+                ROUND(AVG(attendance_percentage), 1) AS avg_attendance
+              FROM attendance_summary
+              WHERE academic_session_id = $2
+            ),
+            previous_attendance AS (
+              SELECT 
+                ROUND(AVG(attendance_percentage), 1) AS avg_attendance
+              FROM attendance_summary
+              WHERE academic_session_id = $3
+            )
             SELECT 
-              COUNT(*) AS total_students
-            FROM students
-            WHERE status = 'active'
+              sc.total_students,
+              sc.new_students,
+              COALESCE(ca.avg_attendance, 95) AS current_attendance,
+              COALESCE(pa.avg_attendance, 93) AS previous_attendance
+            FROM 
+              student_counts sc
+            CROSS JOIN (SELECT COALESCE(avg_attendance, 95) AS avg_attendance FROM current_attendance) ca
+            CROSS JOIN (SELECT COALESCE(avg_attendance, 93) AS avg_attendance FROM previous_attendance) pa
           `;
           
-          const simpleResult = await pool.query(simpleStatsQuery);
-          console.log("Simple student count result:", simpleResult.rows);
+          const statsResult = await pool.query(statsQuery, [
+            current_start_date,
+            current_session_id,
+            previous_session_id
+          ]);
           
-          if (simpleResult.rows.length > 0) {
-            // It worked! Now try the full query
-            try {
-              const fullStatsQuery = `
-                WITH student_counts AS (
-                  SELECT 
-                    COUNT(*) AS total_students,
-                    COUNT(*) FILTER (WHERE admission_date >= $1) AS new_students
-                  FROM students
-                  WHERE status = 'active'
-                ),
-                current_attendance AS (
-                  SELECT 
-                    ROUND(AVG(attendance_percentage), 1) AS avg_attendance
-                  FROM attendance_summary
-                  WHERE academic_session_id = $2
-                ),
-                previous_attendance AS (
-                  SELECT 
-                    ROUND(AVG(attendance_percentage), 1) AS avg_attendance
-                  FROM attendance_summary
-                  WHERE academic_session_id = $3
-                )
-                SELECT 
-                  sc.total_students,
-                  sc.new_students,
-                  COALESCE(ca.avg_attendance, 95) AS current_attendance,
-                  COALESCE(pa.avg_attendance, 93) AS previous_attendance
-                FROM 
-                  student_counts sc
-                CROSS JOIN (SELECT COALESCE(avg_attendance, 95) AS avg_attendance FROM current_attendance) ca
-                CROSS JOIN (SELECT COALESCE(avg_attendance, 93) AS avg_attendance FROM previous_attendance) pa
-              `;
-              
-              const result = await pool.query(fullStatsQuery, [
-                current_start_date,
-                current_session_id,
-                previous_session_id
-              ]);
-              
-              console.log("Full stats query result:", result.rows);
-              
-              if (result.rows.length > 0) {
-                const stats = result.rows[0];
-                
-                // Calculate attendance change
-                const currentAttendance = parseFloat(stats.current_attendance) || 95;
-                const previousAttendance = parseFloat(stats.previous_attendance) || 93;
-                const attendanceChange = (currentAttendance - previousAttendance).toFixed(1);
-                
-                // Set default grades - getting them from actual data would require more complex queries
-                const currentGrade = 'B+';
-                const previousGrade = 'B';
-                
-                return res.status(200).json({
-                  success: true,
-                  data: {
-                    students: {
-                      total: parseInt(stats.total_students),
-                      newThisTerm: parseInt(stats.new_students) || 15
-                    },
-                    attendance: {
-                      current: currentAttendance,
-                      previous: previousAttendance,
-                      change: parseFloat(attendanceChange)
-                    },
-                    performance: {
-                      currentGrade: currentGrade,
-                      previousGrade: previousGrade
-                    }
-                  }
-                });
-              }
-            } catch (fullQueryError) {
-              console.error("Error in full stats query:", fullQueryError);
-              // Continue to fallback
-            }
+          // Get current session grade distribution
+          const currentGradeQuery = `
+            SELECT 
+              grade,
+              COUNT(*) as grade_count,
+              ROUND(AVG(points), 2) as avg_points
+            FROM student_result_summary
+            WHERE academic_session_id = $1
+            GROUP BY grade
+            ORDER BY avg_points DESC
+          `;
+          
+          const currentGradeResult = await pool.query(currentGradeQuery, [current_session_id]);
+          
+          // Get previous session grade distribution
+          const previousGradeQuery = `
+            SELECT 
+              grade,
+              COUNT(*) as grade_count,
+              ROUND(AVG(points), 2) as avg_points
+            FROM student_result_summary
+            WHERE academic_session_id = $1
+            GROUP BY grade
+            ORDER BY avg_points DESC
+          `;
+          
+          const previousGradeResult = await pool.query(previousGradeQuery, [previous_session_id]);
+          
+          // Calculate weighted average grade for current session
+          let currentGrade = 'N/A';
+          let previousGrade = 'N/A';
+          
+          // Determine most common grade for current session (or highest if tied)
+          if (currentGradeResult.rows.length > 0) {
+            const mostCommonGrade = currentGradeResult.rows.reduce((prev, current) => 
+              (parseInt(prev.grade_count) > parseInt(current.grade_count)) ? prev : current
+            );
+            currentGrade = mostCommonGrade.grade;
           }
-        } catch (simpleQueryError) {
-          console.error("Error in simple student count query:", simpleQueryError);
+          
+          // Determine most common grade for previous session (or highest if tied)
+          if (previousGradeResult.rows.length > 0) {
+            const mostCommonGrade = previousGradeResult.rows.reduce((prev, current) => 
+              (parseInt(prev.grade_count) > parseInt(current.grade_count)) ? prev : current
+            );
+            previousGrade = mostCommonGrade.grade;
+          }
+          
+          if (statsResult.rows.length > 0) {
+            const stats = statsResult.rows[0];
+            
+            // Calculate attendance change
+            const currentAttendance = parseFloat(stats.current_attendance) || 95;
+            const previousAttendance = parseFloat(stats.previous_attendance) || 93;
+            const attendanceChange = (currentAttendance - previousAttendance).toFixed(1);
+            
+            return res.status(200).json({
+              success: true,
+              data: {
+                students: {
+                  total: parseInt(stats.total_students),
+                  newThisTerm: parseInt(stats.new_students) || 15
+                },
+                attendance: {
+                  current: currentAttendance,
+                  previous: previousAttendance,
+                  change: parseFloat(attendanceChange)
+                },
+                performance: {
+                  currentGrade: currentGrade,
+                  previousGrade: previousGrade,
+                  currentDetails: currentGradeResult.rows,
+                  previousDetails: previousGradeResult.rows
+                }
+              }
+            });
+          }
+        } catch (statsError) {
+          console.error("Error in stats query:", statsError);
           // Continue to fallback
         }
       }
@@ -197,6 +221,7 @@ router.get('/studentstats',authorizeRoles("admin", "teacher"),  async (req, res)
     });
   }
 });
+
 
 router.get('/leavestats', authorizeRoles("admin", "teacher"), async (req, res) => {
   try {

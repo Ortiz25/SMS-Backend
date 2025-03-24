@@ -377,7 +377,6 @@ router.get(
 
 // src/routes/student.routes.js - Add or update this route
 
-// Update student with detailed information
 // Update student route handler with fixed schema references
 router.put('/:id', authenticateToken, async (req, res) => {
   const client = await pool.connect();
@@ -401,15 +400,22 @@ router.put('/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    const student = studentCheck.rows[0];
+    // Store the original student data
+    let updatedStudent = studentCheck.rows[0];
     
     // Extract guardian data if present
     const guardianData = updateData.guardian;
     delete updateData.guardian;
     
     // Extract subjects for special handling
-    const subjects = updateData.subjects;
+    let subjects = updateData.subjects;
     delete updateData.subjects;
+    
+    // Remove duplicates from subjects array if it exists
+    if (subjects && Array.isArray(subjects)) {
+      subjects = [...new Set(subjects)]; // Remove duplicates using Set
+      console.log('Deduplicated subjects:', subjects);
+    }
     
     // Remove id from updateData as it's not needed for the update
     delete updateData.id;
@@ -424,8 +430,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
     
     // Log the request data after preprocessing
     console.log('Preprocessed update data:', updateData);
-    
-    let updatedStudent = null;
     
     // Only proceed if there are fields to update
     if (Object.keys(updateData).length > 0) {
@@ -454,184 +458,266 @@ router.put('/:id', authenticateToken, async (req, res) => {
         paramIndex++;
       }
       
+      // Only proceed if we have set clauses
       if (setClauses.length > 0) {
         // Add the student ID to values array
         values.push(id);
         
-        // Only proceed if we have set clauses
-        if (setClauses.length === 0) {
-          console.log('No valid fields to update');
-          // Skip the update if there's nothing to update
-          updatedStudent = student; // Use the existing student record
-        } else {
-          console.log('Update query SET clauses:', setClauses.join(', '));
-          console.log('Update query values:', values);
-          
-          const updateQuery = `
-            UPDATE students
-            SET ${setClauses.join(', ')}, updated_at = NOW()
-            WHERE id = $${paramIndex}
-            RETURNING *
-          `;
-          
-          // Execute the update query
-          try {
-            const result = await client.query(updateQuery, values);
-            if (result.rows.length > 0) {
-              updatedStudent = result.rows[0];
-              console.log('Student updated successfully');
-            } else {
-              console.error('Update query returned no rows');
-              updatedStudent = student; // Fallback to original data
-            }
-          } catch (queryError) {
-            console.error('Error executing update query:', queryError);
-            throw queryError; // Rethrow to be caught by the outer try/catch
-          }
-        }
+        console.log('Update query SET clauses:', setClauses.join(', '));
+        console.log('Update query values:', values);
         
-        // Update guardian if provided
-        if (guardianData && Object.keys(guardianData).length > 0) {
-          // Get the guardian ID for this student
-          const guardianQuery = `
-            SELECT p.id
-            FROM parents p
-            JOIN student_parent_relationships spr ON p.id = spr.parent_id
-            WHERE spr.student_id = $1 AND spr.is_primary_contact = true
-          `;
+        const updateQuery = `
+          UPDATE students
+          SET ${setClauses.join(', ')}, updated_at = NOW()
+          WHERE id = $${paramIndex}
+          RETURNING *
+        `;
+        
+        // Execute the update query
+        try {
+          const result = await client.query(updateQuery, values);
+          if (result.rows.length > 0) {
+            updatedStudent = result.rows[0];
+            console.log('Student updated successfully');
+          } else {
+            console.error('Update query returned no rows');
+            // We already have the original student data in updatedStudent, no need to reassign
+          }
+        } catch (queryError) {
+          console.error('Error executing update query:', queryError);
+          throw queryError; // Rethrow to be caught by the outer try/catch
+        }
+      }
+      
+      // Update guardian if provided
+      if (guardianData && Object.keys(guardianData).length > 0) {
+        // Get the guardian ID for this student
+        const guardianQuery = `
+          SELECT p.id
+          FROM parents p
+          JOIN student_parent_relationships spr ON p.id = spr.parent_id
+          WHERE spr.student_id = $1 AND spr.is_primary_contact = true
+        `;
+        
+        const guardianResult = await client.query(guardianQuery, [id]);
+        
+        if (guardianResult.rows.length > 0) {
+          const guardianId = guardianResult.rows[0].id;
           
-          const guardianResult = await client.query(guardianQuery, [id]);
+          // Build guardian update query
+          const guardianSetClauses = [];
+          const guardianValues = [];
+          let guardianParamIndex = 1;
           
-          if (guardianResult.rows.length > 0) {
-            const guardianId = guardianResult.rows[0].id;
-            
-            // Build guardian update query
-            const guardianSetClauses = [];
-            const guardianValues = [];
-            let guardianParamIndex = 1;
-            
-            // Map from frontend field names to database column names
-            const guardianFieldMapping = {
-              name: ['first_name', 'last_name'], // Special case for name that needs to be split
-              relationship: 'relationship',
-              phone: 'phone_primary',
-              email: 'email',
-              idNumber: 'id_number'
-            };
-            
-            for (const [key, value] of Object.entries(guardianData)) {
-              // Handle special case for name field (needs to be split into first_name and last_name)
-              if (key === 'name' && value) {
-                const nameParts = value.split(' ');
-                const firstName = nameParts[0];
-                const lastName = nameParts.slice(1).join(' ') || '';
-                
-                guardianSetClauses.push(`first_name = $${guardianParamIndex}`);
-                guardianValues.push(firstName);
-                guardianParamIndex++;
-                
-                guardianSetClauses.push(`last_name = $${guardianParamIndex}`);
-                guardianValues.push(lastName);
-                guardianParamIndex++;
-              } else if (guardianFieldMapping[key]) {
-                // Regular case - direct field mapping
-                const dbField = guardianFieldMapping[key];
-                guardianSetClauses.push(`${dbField} = $${guardianParamIndex}`);
-                guardianValues.push(value);
-                guardianParamIndex++;
-              }
+          // Map from frontend field names to database column names
+          const guardianFieldMapping = {
+            name: ['first_name', 'last_name'], // Special case for name that needs to be split
+            relationship: 'relationship',
+            phone: 'phone_primary',
+            email: 'email',
+            idNumber: 'id_number'
+          };
+          
+          for (const [key, value] of Object.entries(guardianData)) {
+            // Handle special case for name field (needs to be split into first_name and last_name)
+            if (key === 'name' && value) {
+              const nameParts = value.split(' ');
+              const firstName = nameParts[0];
+              const lastName = nameParts.slice(1).join(' ') || '';
+              
+              guardianSetClauses.push(`first_name = $${guardianParamIndex}`);
+              guardianValues.push(firstName);
+              guardianParamIndex++;
+              
+              guardianSetClauses.push(`last_name = $${guardianParamIndex}`);
+              guardianValues.push(lastName);
+              guardianParamIndex++;
+            } else if (guardianFieldMapping[key]) {
+              // Regular case - direct field mapping
+              const dbField = guardianFieldMapping[key];
+              guardianSetClauses.push(`${dbField} = $${guardianParamIndex}`);
+              guardianValues.push(value);
+              guardianParamIndex++;
             }
+          }
+          
+          if (guardianSetClauses.length > 0) {
+            // Add the guardian ID to values array
+            guardianValues.push(guardianId);
             
-            if (guardianSetClauses.length > 0) {
-              // Add the guardian ID to values array
-              guardianValues.push(guardianId);
-              
-              const updateGuardianQuery = `
-                UPDATE parents
-                SET ${guardianSetClauses.join(', ')}, updated_at = NOW()
-                WHERE id = $${guardianParamIndex}
-              `;
-              
-              console.log('Guardian update query:', updateGuardianQuery);
-              console.log('Guardian update values:', guardianValues);
-              
-              await client.query(updateGuardianQuery, guardianValues);
-            }
+            const updateGuardianQuery = `
+              UPDATE parents
+              SET ${guardianSetClauses.join(', ')}, updated_at = NOW()
+              WHERE id = $${guardianParamIndex}
+            `;
+            
+            console.log('Guardian update query:', updateGuardianQuery);
+            console.log('Guardian update values:', guardianValues);
+            
+            await client.query(updateGuardianQuery, guardianValues);
           }
         }
       }
     }
     
-    // Fetch the updated student record with all related data
-    const getUpdatedStudentQuery = `
+    // Check if we have current class and stream from the student data
+    // If updatedStudent somehow doesn't have current_class or stream, fetch it again
+    if (!updatedStudent.current_class || !updatedStudent.stream) {
+      console.log('Missing class or stream information, fetching complete student data');
+      const refreshedStudentResult = await client.query('SELECT * FROM students WHERE id = $1', [id]);
+      if (refreshedStudentResult.rows.length > 0) {
+        updatedStudent = refreshedStudentResult.rows[0];
+      }
+    }
+    
+    console.log('Student data for subject update:', {
+      id: updatedStudent.id,
+      current_class: updatedStudent.current_class,
+      stream: updatedStudent.stream
+    });
+    
+    // Handle subjects update if provided
+    if (subjects && Array.isArray(subjects) && updatedStudent.current_class && updatedStudent.stream) {
+      console.log('Updating subjects for student:', id);
+      
+      // Get current academic session
+      const sessionResult = await client.query(
+        'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
+      );
+      
+      if (sessionResult.rows.length > 0) {
+        const academicSessionId = sessionResult.rows[0].id;
+        
+        // Get student's current class
+        const classResult = await client.query(
+          'SELECT id FROM classes WHERE level = $1 AND stream = $2 AND academic_session_id = $3 LIMIT 1',
+          [updatedStudent.current_class, updatedStudent.stream, academicSessionId]
+        );
+        
+        if (classResult.rows.length > 0) {
+          const classId = classResult.rows[0].id;
+          
+          // Get currently enrolled subjects
+          const currentSubjectsResult = await client.query(
+            'SELECT subject_id FROM student_subjects WHERE student_id = $1 AND academic_session_id = $2 AND status = $3',
+            [id, academicSessionId, 'active']
+          );
+          
+          const currentSubjectIds = currentSubjectsResult.rows.map(row => row.subject_id);
+          console.log('Current active subjects:', currentSubjectIds);
+          
+          // Determine which subjects to add and which to remove
+          const subjectsToAdd = subjects.filter(subjectId => !currentSubjectIds.includes(subjectId));
+          const subjectsToRemove = currentSubjectIds.filter(subjectId => !subjects.includes(subjectId));
+          
+          console.log('Subjects to add:', subjectsToAdd);
+          console.log('Subjects to remove:', subjectsToRemove);
+          
+          // Mark subjects as dropped if they're no longer selected
+          if (subjectsToRemove.length > 0) {
+            await client.query(
+              'UPDATE student_subjects SET status = $1, updated_at = NOW() WHERE student_id = $2 AND subject_id = ANY($3) AND academic_session_id = $4',
+              ['dropped', id, subjectsToRemove, academicSessionId]
+            );
+            console.log(`Marked ${subjectsToRemove.length} subjects as dropped`);
+          }
+          
+          // Add new subject enrollments
+          if (subjectsToAdd.length > 0) {
+            const insertPromises = subjectsToAdd.map(subjectId => {
+              return client.query(
+                `INSERT INTO student_subjects 
+                 (student_id, subject_id, class_id, academic_session_id, enrollment_date, is_elective, status)
+                 VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'active')
+                 ON CONFLICT (student_id, subject_id, academic_session_id) 
+                 DO UPDATE SET status = 'active', updated_at = NOW()`,
+                [id, subjectId, classId, academicSessionId]
+              );
+            });
+            
+            await Promise.all(insertPromises);
+            console.log(`Added ${subjectsToAdd.length} new subject enrollments`);
+          }
+        } else {
+          console.warn(`No class found for level=${updatedStudent.current_class}, stream=${updatedStudent.stream}`);
+        }
+      } else {
+        console.warn('No current academic session found');
+      }
+    } else {
+      console.log('Skipping subjects update due to missing data:', {
+        hasSubjects: !!subjects && Array.isArray(subjects),
+        hasClass: !!updatedStudent.current_class,
+        hasStream: !!updatedStudent.stream
+      });
+    }
+    
+    await client.query('COMMIT');
+    
+    // Get the complete updated student data with relations
+    const completeStudentQuery = `
       SELECT 
         s.*,
-        p.id as guardian_id,
-        p.first_name as guardian_first_name,
-        p.last_name as guardian_last_name,
-        p.relationship,
-        p.phone_primary,
-        p.phone_secondary,
-        p.email,
-        p.id_number
-      FROM students s
+        json_build_object(
+          'id', p.id,
+          'name', concat(p.first_name, ' ', p.last_name),
+          'phone', p.phone_primary,
+          'email', p.email,
+          'relationship', p.relationship,
+          'idNumber', p.id_number
+        ) AS guardian
+      FROM 
+        students s
       LEFT JOIN student_parent_relationships spr ON s.id = spr.student_id AND spr.is_primary_contact = true
       LEFT JOIN parents p ON spr.parent_id = p.id
       WHERE s.id = $1
     `;
     
-    const updatedStudentResult = await client.query(getUpdatedStudentQuery, [id]);
-    const updatedStudentComplete = updatedStudentResult.rows[0];
+    const completeStudentResult = await pool.query(completeStudentQuery, [id]);
     
-    if (updatedStudentComplete) {
-      // Format guardian data
-      const guardian = updatedStudentComplete.guardian_id ? {
-        id: updatedStudentComplete.guardian_id,
-        name: `${updatedStudentComplete.guardian_first_name || ''} ${updatedStudentComplete.guardian_last_name || ''}`.trim(),
-        relationship: updatedStudentComplete.relationship,
-        phone_primary: updatedStudentComplete.phone_primary,
-        phone_secondary: updatedStudentComplete.phone_secondary,
-        email: updatedStudentComplete.email,
-        id_number: updatedStudentComplete.id_number
-      } : null;
-      
-      // Remove guardian fields from the student object
-      delete updatedStudentComplete.guardian_id;
-      delete updatedStudentComplete.guardian_first_name;
-      delete updatedStudentComplete.guardian_last_name;
-      delete updatedStudentComplete.relationship;
-      delete updatedStudentComplete.phone_primary;
-      delete updatedStudentComplete.phone_secondary;
-      delete updatedStudentComplete.email;
-      delete updatedStudentComplete.id_number;
-      
-      // Add guardian object to student
-      updatedStudentComplete.guardian = guardian;
-    }
+    // Get the student's subjects
+    const subjectsQuery = `
+      SELECT 
+        ss.subject_id,
+        s.name AS subject_name,
+        s.code AS subject_code
+      FROM 
+        student_subjects ss
+      JOIN subjects s ON ss.subject_id = s.id
+      JOIN academic_sessions a ON ss.academic_session_id = a.id
+      WHERE 
+        ss.student_id = $1 
+        AND a.is_current = true
+        AND ss.status = 'active'
+    `;
     
-    // Commit the transaction
-    await client.query('COMMIT');
+    const subjectsResult = await pool.query(subjectsQuery, [id]);
     
-    // Return the updated student data
+    // Combine the data
+    const responseData = {
+      ...completeStudentResult.rows[0],
+      subjects: subjectsResult.rows
+    };
+    
     return res.status(200).json({
       success: true,
       message: 'Student updated successfully',
-      data: updatedStudentComplete || student // Return either the updated student or the original if no updates were made
+      data: responseData
     });
     
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error updating student:', error);
-    
     return res.status(500).json({
       success: false,
-      error: 'Failed to update student',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Error updating student information',
+      details: error.message
     });
   } finally {
     client.release();
   }
 });
+
 
 const isValidStudentColumn = (key) => {
   // List of valid columns in the students table
