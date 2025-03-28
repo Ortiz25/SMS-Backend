@@ -727,6 +727,34 @@ router.get('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) 
     }
   });
 
+  router.get('/day-scholars', authorizeRoles('admin', 'teacher'), async (req, res) => {
+    try {
+      const dayScholarsResult = await pool.query(
+        `SELECT s.*,
+          tr.route_name as transport_route,
+          rs.stop_name as pickup_stop,
+          ta.status as allocation_status
+        FROM students s
+        LEFT JOIN transport_allocations ta ON s.id = ta.student_id AND ta.status = 'active'
+        LEFT JOIN transport_routes tr ON ta.route_id = tr.id
+        LEFT JOIN route_stops rs ON ta.pickup_stop_id = rs.id
+        WHERE s.student_type = 'day_scholar'
+        ORDER BY s.last_name, s.first_name`
+      );
+      
+      res.json({
+        success: true,
+        dayScholars: dayScholarsResult.rows
+      });
+    } catch (error) {
+      console.error('Error fetching day scholars:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Server error while fetching day scholars'
+      });
+    }
+  });
+
   /**
  * @route GET /api/transport/routes
  * @desc Get all transport routes
@@ -1135,7 +1163,7 @@ router.get('/stops', authorizeRoles('admin', 'teacher'), async (req, res) => {
  * @desc Get all transport allocations
  * @access Private
  */
-router.get('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) => {
+router.get('/transport-allocations', authorizeRoles('admin', 'teacher'), async (req, res) => {
     try {
       // Get query parameters for filtering
       const { academic_session_id, route_id, status } = req.query;
@@ -1200,7 +1228,7 @@ router.get('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) 
    * @desc Allocate a student to a transport route
    * @access Private
    */
-  router.post('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) => {
+  router.post('/transport-allocations', authorizeRoles('admin', 'teacher'), async (req, res) => {
     const { student_id, route_id, pickup_stop_id, academic_session_id } = req.body;
   
     // Validate request
@@ -1336,7 +1364,7 @@ router.get('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) 
    * @desc Update transport allocation
    * @access Private
    */
-  router.put('/allocations/:id', authorizeRoles('admin', 'teacher'), async (req, res) => {
+  router.put('/transport-allocations/:id', authorizeRoles('admin', 'teacher'), async (req, res) => {
     const { id } = req.params;
     const { pickup_stop_id, status, end_date } = req.body;
   

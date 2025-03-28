@@ -152,6 +152,7 @@ router.get(
             s.admission_date,
             s.medical_conditions,
             s.previous_school,
+            s.curriculum_type,
             INITCAP(s.gender) AS gender,
             TO_CHAR(s.date_of_birth, 'YYYY-MM-DD') AS "dateOfBirth",
            
@@ -413,8 +414,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
     
     // Remove duplicates from subjects array if it exists
     if (subjects && Array.isArray(subjects)) {
-      subjects = [...new Set(subjects)]; // Remove duplicates using Set
-      console.log('Deduplicated subjects:', subjects);
+      console.log('Subject data received:', subjects);
     }
     
     // Remove id from updateData as it's not needed for the update
@@ -573,12 +573,37 @@ router.put('/:id', authenticateToken, async (req, res) => {
     console.log('Student data for subject update:', {
       id: updatedStudent.id,
       current_class: updatedStudent.current_class,
-      stream: updatedStudent.stream
+      stream: updatedStudent.stream,
+      curriculum_type: updatedStudent.curriculum_type
     });
     
     // Handle subjects update if provided
     if (subjects && Array.isArray(subjects) && updatedStudent.current_class && updatedStudent.stream) {
       console.log('Updating subjects for student:', id);
+      
+      // Extract just the subject IDs from the subjects array, handling all possible formats
+      const subjectIds = [];
+      
+      subjects.forEach(subject => {
+        if (typeof subject === 'object' && subject !== null && subject.id) {
+          // Handle object format: { id: 123, name: "Math", ... }
+          const numId = parseInt(subject.id);
+          if (!isNaN(numId)) {
+            subjectIds.push(numId);
+          }
+        } else if (typeof subject === 'string' || typeof subject === 'number') {
+          // Handle string/number format: "123" or 123
+          const numId = parseInt(subject);
+          if (!isNaN(numId)) {
+            subjectIds.push(numId);
+          }
+        }
+      });
+      
+      // Remove duplicates
+      const uniqueSubjectIds = [...new Set(subjectIds)];
+      
+      console.log('Processed unique subject IDs:', uniqueSubjectIds);
       
       // Get current academic session
       const sessionResult = await client.query(
@@ -603,40 +628,54 @@ router.put('/:id', authenticateToken, async (req, res) => {
             [id, academicSessionId, 'active']
           );
           
-          const currentSubjectIds = currentSubjectsResult.rows.map(row => row.subject_id);
+          const currentSubjectIds = currentSubjectsResult.rows.map(row => parseInt(row.subject_id));
           console.log('Current active subjects:', currentSubjectIds);
           
           // Determine which subjects to add and which to remove
-          const subjectsToAdd = subjects.filter(subjectId => !currentSubjectIds.includes(subjectId));
-          const subjectsToRemove = currentSubjectIds.filter(subjectId => !subjects.includes(subjectId));
+          const subjectsToAdd = uniqueSubjectIds.filter(subjectId => !currentSubjectIds.includes(subjectId));
+          const subjectsToRemove = currentSubjectIds.filter(subjectId => !uniqueSubjectIds.includes(subjectId));
           
           console.log('Subjects to add:', subjectsToAdd);
           console.log('Subjects to remove:', subjectsToRemove);
           
           // Mark subjects as dropped if they're no longer selected
           if (subjectsToRemove.length > 0) {
-            await client.query(
-              'UPDATE student_subjects SET status = $1, updated_at = NOW() WHERE student_id = $2 AND subject_id = ANY($3) AND academic_session_id = $4',
-              ['dropped', id, subjectsToRemove, academicSessionId]
-            );
-            console.log(`Marked ${subjectsToRemove.length} subjects as dropped`);
+            try {
+              const dropResult = await client.query(
+                'UPDATE student_subjects SET status = $1, updated_at = NOW() WHERE student_id = $2 AND subject_id = ANY($3) AND academic_session_id = $4',
+                ['dropped', id, subjectsToRemove, academicSessionId]
+              );
+              console.log(`Marked ${dropResult.rowCount} subjects as dropped`);
+            } catch (error) {
+              console.error('Error marking subjects as dropped:', error);
+              // Continue with the process
+            }
           }
           
           // Add new subject enrollments
           if (subjectsToAdd.length > 0) {
-            const insertPromises = subjectsToAdd.map(subjectId => {
-              return client.query(
-                `INSERT INTO student_subjects 
-                 (student_id, subject_id, class_id, academic_session_id, enrollment_date, is_elective, status)
-                 VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'active')
-                 ON CONFLICT (student_id, subject_id, academic_session_id) 
-                 DO UPDATE SET status = 'active', updated_at = NOW()`,
-                [id, subjectId, classId, academicSessionId]
-              );
-            });
+            let successCount = 0;
+            let errorCount = 0;
             
-            await Promise.all(insertPromises);
-            console.log(`Added ${subjectsToAdd.length} new subject enrollments`);
+            // Process each subject individually for better error handling
+            for (const subjectId of subjectsToAdd) {
+              try {
+                await client.query(
+                  `INSERT INTO student_subjects 
+                  (student_id, subject_id, class_id, academic_session_id, enrollment_date, is_elective, status)
+                  VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'active')
+                  ON CONFLICT (student_id, subject_id, academic_session_id) 
+                  DO UPDATE SET status = 'active', updated_at = NOW()`,
+                  [id, subjectId, classId, academicSessionId]
+                );
+                successCount++;
+              } catch (error) {
+                console.error(`Error adding subject ${subjectId}:`, error);
+                errorCount++;
+              }
+            }
+            
+            console.log(`Subject enrollment summary: ${successCount} added successfully, ${errorCount} failed`);
           }
         } else {
           console.warn(`No class found for level=${updatedStudent.current_class}, stream=${updatedStudent.stream}`);
@@ -675,16 +714,20 @@ router.put('/:id', authenticateToken, async (req, res) => {
     
     const completeStudentResult = await pool.query(completeStudentQuery, [id]);
     
-    // Get the student's subjects
+    // Get the student's subjects with teacher information
     const subjectsQuery = `
       SELECT 
-        ss.subject_id,
-        s.name AS subject_name,
-        s.code AS subject_code
+        ss.subject_id AS id,
+        s.name,
+        s.code,
+        COALESCE(CONCAT(t.first_name, ' ', t.last_name), 'Not Assigned') AS teacher,
+        ss.status,
+        ss.is_elective AS "isElective"
       FROM 
         student_subjects ss
       JOIN subjects s ON ss.subject_id = s.id
       JOIN academic_sessions a ON ss.academic_session_id = a.id
+      LEFT JOIN teachers t ON ss.teacher_id = t.id
       WHERE 
         ss.student_id = $1 
         AND a.is_current = true

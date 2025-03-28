@@ -820,11 +820,16 @@ router.get('/students/:studentId/status-history', authorizeRoles('admin', 'teach
     const { studentId } = req.params;
     console.log(studentId)
     const query = `
-      SELECT ssh.*, u.username AS created_by_name
-      FROM student_status_history ssh
-      JOIN users u ON ssh.created_by = u.id
-      WHERE ssh.student_id = $1
-      ORDER BY ssh.effective_date DESC, ssh.id DESC
+  SELECT 
+    ssh.*,
+    CASE 
+        WHEN ssh.created_by IS NULL THEN 'System Automation'
+        ELSE u.username 
+    END AS created_by_name
+FROM student_status_history ssh
+LEFT JOIN users u ON ssh.created_by = u.id
+WHERE ssh.student_id = $1
+ORDER BY ssh.effective_date DESC, ssh.id DESC
     `;
     
     const history = await pool.query(query, [studentId]);
