@@ -8,33 +8,33 @@ const router = express.Router();
 // Apply authentication middleware to all dashboard routes
 router.use(authenticateToken);
 
-
-
-
-router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res) => {
-  try {
-    console.log("Stats route hit");
-    
-    // Default values in case queries fail
-    let defaultStats = {
-      students: {
-        total: 450,
-        newThisTerm: 15
-      },
-      attendance: {
-        current: 95,
-        previous: 93,
-        change: 2
-      },
-      performance: {
-        currentGrade: 'B+',
-        previousGrade: 'B'
-      }
-    };
-
-    // Try to get current and previous academic sessions
+router.get(
+  "/studentstats",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
     try {
-      const sessionsQuery = `
+      console.log("Stats route hit");
+
+      // Default values in case queries fail
+      let defaultStats = {
+        students: {
+          total: 450,
+          newThisTerm: 15,
+        },
+        attendance: {
+          current: 95,
+          previous: 93,
+          change: 2,
+        },
+        performance: {
+          currentGrade: "B+",
+          previousGrade: "B",
+        },
+      };
+
+      // Try to get current and previous academic sessions
+      try {
+        const sessionsQuery = `
         WITH current_session AS (
           SELECT id, year, term, start_date 
           FROM academic_sessions 
@@ -56,16 +56,20 @@ router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res)
         FROM current_session cs
         CROSS JOIN previous_session ps
       `;
-      
-      const sessionsResult = await pool.query(sessionsQuery);
-      console.log("Sessions query result:", sessionsResult.rows);
-      
-      if (sessionsResult.rows.length > 0) {
-        const { current_session_id, current_start_date, previous_session_id } = sessionsResult.rows[0];
-        
-        // Get student statistics and attendance
-        try {
-          const statsQuery = `
+
+        const sessionsResult = await pool.query(sessionsQuery);
+        console.log("Sessions query result:", sessionsResult.rows);
+
+        if (sessionsResult.rows.length > 0) {
+          const {
+            current_session_id,
+            current_start_date,
+            previous_session_id,
+          } = sessionsResult.rows[0];
+
+          // Get student statistics and attendance
+          try {
+            const statsQuery = `
             WITH student_counts AS (
               SELECT 
                 COUNT(*) AS total_students,
@@ -94,15 +98,15 @@ router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res)
             CROSS JOIN (SELECT COALESCE(avg_attendance, 95) AS avg_attendance FROM current_attendance) ca
             CROSS JOIN (SELECT COALESCE(avg_attendance, 93) AS avg_attendance FROM previous_attendance) pa
           `;
-          
-          const statsResult = await pool.query(statsQuery, [
-            current_start_date,
-            current_session_id,
-            previous_session_id
-          ]);
-          
-          // Get current session grade distribution
-          const currentGradeQuery = `
+
+            const statsResult = await pool.query(statsQuery, [
+              current_start_date,
+              current_session_id,
+              previous_session_id,
+            ]);
+
+            // Get current session grade distribution
+            const currentGradeQuery = `
             SELECT 
               grade,
               COUNT(*) as grade_count,
@@ -112,11 +116,13 @@ router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res)
             GROUP BY grade
             ORDER BY avg_points DESC
           `;
-          
-          const currentGradeResult = await pool.query(currentGradeQuery, [current_session_id]);
-          
-          // Get previous session grade distribution
-          const previousGradeQuery = `
+
+            const currentGradeResult = await pool.query(currentGradeQuery, [
+              current_session_id,
+            ]);
+
+            // Get previous session grade distribution
+            const previousGradeQuery = `
             SELECT 
               grade,
               COUNT(*) as grade_count,
@@ -126,126 +132,140 @@ router.get('/studentstats', authorizeRoles("admin", "teacher"), async (req, res)
             GROUP BY grade
             ORDER BY avg_points DESC
           `;
-          
-          const previousGradeResult = await pool.query(previousGradeQuery, [previous_session_id]);
-          
-          // Calculate weighted average grade for current session
-          let currentGrade = 'N/A';
-          let previousGrade = 'N/A';
-          
-          // Determine most common grade for current session (or highest if tied)
-          if (currentGradeResult.rows.length > 0) {
-            const mostCommonGrade = currentGradeResult.rows.reduce((prev, current) => 
-              (parseInt(prev.grade_count) > parseInt(current.grade_count)) ? prev : current
-            );
-            currentGrade = mostCommonGrade.grade;
-          }
-          
-          // Determine most common grade for previous session (or highest if tied)
-          if (previousGradeResult.rows.length > 0) {
-            const mostCommonGrade = previousGradeResult.rows.reduce((prev, current) => 
-              (parseInt(prev.grade_count) > parseInt(current.grade_count)) ? prev : current
-            );
-            previousGrade = mostCommonGrade.grade;
-          }
-          
-          if (statsResult.rows.length > 0) {
-            const stats = statsResult.rows[0];
-            
-            // Calculate attendance change
-            const currentAttendance = parseFloat(stats.current_attendance) || 95;
-            const previousAttendance = parseFloat(stats.previous_attendance) || 93;
-            const attendanceChange = (currentAttendance - previousAttendance).toFixed(1);
-            
-            return res.status(200).json({
-              success: true,
-              data: {
-                students: {
-                  total: parseInt(stats.total_students),
-                  newThisTerm: parseInt(stats.new_students) || 15
+
+            const previousGradeResult = await pool.query(previousGradeQuery, [
+              previous_session_id,
+            ]);
+
+            // Calculate weighted average grade for current session
+            let currentGrade = "N/A";
+            let previousGrade = "N/A";
+
+            // Determine most common grade for current session (or highest if tied)
+            if (currentGradeResult.rows.length > 0) {
+              const mostCommonGrade = currentGradeResult.rows.reduce(
+                (prev, current) =>
+                  parseInt(prev.grade_count) > parseInt(current.grade_count)
+                    ? prev
+                    : current
+              );
+              currentGrade = mostCommonGrade.grade;
+            }
+
+            // Determine most common grade for previous session (or highest if tied)
+            if (previousGradeResult.rows.length > 0) {
+              const mostCommonGrade = previousGradeResult.rows.reduce(
+                (prev, current) =>
+                  parseInt(prev.grade_count) > parseInt(current.grade_count)
+                    ? prev
+                    : current
+              );
+              previousGrade = mostCommonGrade.grade;
+            }
+
+            if (statsResult.rows.length > 0) {
+              const stats = statsResult.rows[0];
+
+              // Calculate attendance change
+              const currentAttendance =
+                parseFloat(stats.current_attendance) || 95;
+              const previousAttendance =
+                parseFloat(stats.previous_attendance) || 93;
+              const attendanceChange = (
+                currentAttendance - previousAttendance
+              ).toFixed(1);
+
+              return res.status(200).json({
+                success: true,
+                data: {
+                  students: {
+                    total: parseInt(stats.total_students),
+                    newThisTerm: parseInt(stats.new_students) || 15,
+                  },
+                  attendance: {
+                    current: currentAttendance,
+                    previous: previousAttendance,
+                    change: parseFloat(attendanceChange),
+                  },
+                  performance: {
+                    currentGrade: currentGrade,
+                    previousGrade: previousGrade,
+                    currentDetails: currentGradeResult.rows,
+                    previousDetails: previousGradeResult.rows,
+                  },
                 },
-                attendance: {
-                  current: currentAttendance,
-                  previous: previousAttendance,
-                  change: parseFloat(attendanceChange)
-                },
-                performance: {
-                  currentGrade: currentGrade,
-                  previousGrade: previousGrade,
-                  currentDetails: currentGradeResult.rows,
-                  previousDetails: previousGradeResult.rows
-                }
-              }
-            });
+              });
+            }
+          } catch (statsError) {
+            console.error("Error in stats query:", statsError);
+            // Continue to fallback
           }
-        } catch (statsError) {
-          console.error("Error in stats query:", statsError);
-          // Continue to fallback
         }
+      } catch (sessionsError) {
+        console.error("Error in sessions query:", sessionsError);
+        // Continue to fallback
       }
-    } catch (sessionsError) {
-      console.error("Error in sessions query:", sessionsError);
-      // Continue to fallback
+
+      // If we reach here, something failed, but we'll still return data
+      console.log("Using fallback data due to query issues");
+
+      return res.status(200).json({
+        success: true,
+        data: defaultStats,
+      });
+    } catch (error) {
+      console.error("Unhandled error in student stats route:", error);
+
+      // Even if everything fails, don't return a 404/500 - return fallback data
+      return res.status(200).json({
+        success: true,
+        data: {
+          students: {
+            total: 450,
+            newThisTerm: 15,
+          },
+          attendance: {
+            current: 95,
+            previous: 93,
+            change: 2,
+          },
+          performance: {
+            currentGrade: "B+",
+            previousGrade: "B",
+          },
+        },
+        message: "Using default values due to an error",
+      });
     }
-    
-    // If we reach here, something failed, but we'll still return data
-    console.log("Using fallback data due to query issues");
-    
-    return res.status(200).json({
-      success: true,
-      data: defaultStats
-    });
-    
-  } catch (error) {
-    console.error('Unhandled error in student stats route:', error);
-    
-    // Even if everything fails, don't return a 404/500 - return fallback data
-    return res.status(200).json({
-      success: true,
-      data: {
-        students: {
-          total: 450,
-          newThisTerm: 15
-        },
-        attendance: {
-          current: 95,
-          previous: 93,
-          change: 2
-        },
-        performance: {
-          currentGrade: 'B+',
-          previousGrade: 'B'
-        }
-      },
-      message: "Using default values due to an error"
-    });
   }
-});
+);
 
-
-router.get('/leavestats', authorizeRoles("admin", "teacher"), async (req, res) => {
-  try {
-    // Get current academic year for filtering
-    const academicYearQuery = `
+router.get(
+  "/leavestats",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      // Get current academic year for filtering
+      const academicYearQuery = `
       SELECT EXTRACT(YEAR FROM start_date) || '-' || EXTRACT(YEAR FROM end_date) as academic_year
       FROM academic_sessions 
       WHERE is_current = true 
       LIMIT 1
     `;
-    
-    const academicYearResult = await pool.query(academicYearQuery);
-    
-    if (academicYearResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'No active academic year found'
-      });
-    }
-    
-    const academicYear = academicYearResult.rows[0].academic_year;
-    
-    // Query for leave request counts by status
-    const leaveStatsQuery = `
+
+      const academicYearResult = await pool.query(academicYearQuery);
+
+      if (academicYearResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No active academic year found",
+        });
+      }
+
+      const academicYear = academicYearResult.rows[0].academic_year;
+
+      // Query for leave request counts by status
+      const leaveStatsQuery = `
       SELECT 
         COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
         COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
@@ -258,61 +278,64 @@ router.get('/leavestats', authorizeRoles("admin", "teacher"), async (req, res) =
         AND lb.academic_year = $1
       )
     `;
-    
-    const result = await pool.query(leaveStatsQuery, [academicYear]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+
+      const result = await pool.query(leaveStatsQuery, [academicYear]);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No leave stats found",
+        });
+      }
+
+      const stats = result.rows[0];
+
+      res.status(200).json({
+        success: true,
+        data: {
+          pending: parseInt(stats.pending_count),
+          approved: parseInt(stats.approved_count),
+          rejected: parseInt(stats.rejected_count),
+          total: parseInt(stats.total_count),
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching leave stats:", error);
+      res.status(500).json({
         success: false,
-        message: 'No leave stats found'
+        message: "Server error",
+        error: error.message,
       });
     }
-    
-    const stats = result.rows[0];
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        pending: parseInt(stats.pending_count),
-        approved: parseInt(stats.approved_count),
-        rejected: parseInt(stats.rejected_count),
-        total: parseInt(stats.total_count)
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error fetching leave stats:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
   }
-});
+);
 
-router.get('/workschedule', authorizeRoles("admin", "teacher"), async (req, res) => {
-  try {
-    // Get current academic session
-    const currentSessionQuery = `
+router.get(
+  "/workschedule",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      // Get current academic session
+      const currentSessionQuery = `
       SELECT id 
       FROM academic_sessions 
       WHERE is_current = true 
       LIMIT 1
     `;
-    
-    const sessionResult = await pool.query(currentSessionQuery);
-    
-    if (sessionResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'No active academic session found'
-      });
-    }
-    
-    const currentSessionId = sessionResult.rows[0].id;
-    
-    // Combined query to get all stats at once
-    const statsQuery = `
+
+      const sessionResult = await pool.query(currentSessionQuery);
+
+      if (sessionResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No active academic session found",
+        });
+      }
+
+      const currentSessionId = sessionResult.rows[0].id;
+
+      // Combined query to get all stats at once
+      const statsQuery = `
       WITH teacher_load AS (
         -- Calculate average teaching hours per week for teachers
         SELECT 
@@ -355,51 +378,53 @@ router.get('/workschedule', authorizeRoles("admin", "teacher"), async (req, res)
         (SELECT total_subjects FROM subjects_count) as total_subjects,
         (SELECT utilization_percentage FROM utilization) as utilization
     `;
-    
-    const result = await pool.query(statsQuery, [currentSessionId]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+
+      const result = await pool.query(statsQuery, [currentSessionId]);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No stats found",
+        });
+      }
+
+      const stats = result.rows[0];
+
+      res.status(200).json({
+        success: true,
+        data: {
+          teacherLoad: {
+            avgHoursPerWeek: parseFloat(stats.avg_load),
+          },
+          classes: {
+            total: parseInt(stats.total_classes),
+          },
+          subjects: {
+            total: parseInt(stats.total_subjects),
+          },
+          utilization: {
+            percentage: parseInt(stats.utilization),
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching academic stats:", error);
+      res.status(500).json({
         success: false,
-        message: 'No stats found'
+        message: "Server error",
+        error: error.message,
       });
     }
-    
-    const stats = result.rows[0];
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        teacherLoad: {
-          avgHoursPerWeek: parseFloat(stats.avg_load)
-        },
-        classes: {
-          total: parseInt(stats.total_classes)
-        },
-        subjects: {
-          total: parseInt(stats.total_subjects)
-        },
-        utilization: {
-          percentage: parseInt(stats.utilization)
-        }
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error fetching academic stats:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
   }
-});
+);
 
-
-router.get('/teacher-summary',authorizeRoles("admin", "teacher"), async (req, res) => {
-  try {
-    // SQL query for all required dashboard stats in one go
-    const statsQuery = `
+router.get(
+  "/teacher-summary",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      // SQL query for all required dashboard stats in one go
+      const statsQuery = `
       WITH current_session AS (
         SELECT id, start_date
         FROM academic_sessions
@@ -425,44 +450,43 @@ router.get('/teacher-summary',authorizeRoles("admin", "teacher"), async (req, re
         ds.total_departments
       FROM teacher_stats ts, department_stats ds
     `;
-    
-    const result = await pool.query(statsQuery);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+
+      const result = await pool.query(statsQuery);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No stats found",
+        });
+      }
+
+      const stats = result.rows[0];
+
+      res.status(200).json({
+        success: true,
+        data: {
+          teachers: {
+            total: parseInt(stats.total_teachers),
+            newThisTerm: parseInt(stats.new_teachers),
+          },
+          departments: {
+            total: parseInt(stats.total_departments),
+          },
+          experience: {
+            averageYears: parseFloat(stats.avg_experience),
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching dashboard stats:", error);
+      res.status(500).json({
         success: false,
-        message: 'No stats found'
+        message: "Server error",
+        error: error.message,
       });
     }
-    
-    const stats = result.rows[0];
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        teachers: {
-          total: parseInt(stats.total_teachers),
-          newThisTerm: parseInt(stats.new_teachers)
-        },
-        departments: {
-          total: parseInt(stats.total_departments)
-        },
-        experience: {
-          averageYears: parseFloat(stats.avg_experience)
-        }
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error fetching dashboard stats:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
   }
-});
-
+);
 
 /**
  * Get dashboard summary data
@@ -535,10 +559,17 @@ router.get("/summary", async (req, res, next) => {
 
         // Get library basic stats
         const libraryStatsResult = await client.query(`
-          SELECT
-            COUNT(*) as total_books,
-            SUM(copies_available) as available_books
-          FROM library_books
+         SELECT
+  COUNT(*) as total_books,
+  SUM(CASE 
+        WHEN copies_available IS NULL THEN 0
+        WHEN copies_available < 0 THEN 0
+        ELSE copies_available 
+      END) as available_books,
+  SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_titles,
+  SUM(CASE WHEN status = 'borrowed' THEN 1 ELSE 0 END) as borrowed_titles,
+  SUM(total_copies) as total_copies
+FROM library_books
         `);
 
         // Get upcoming events (limited to 2)
@@ -745,7 +776,7 @@ router.get("/summary", async (req, res, next) => {
         ORDER BY e.event_date, e.start_time
         LIMIT 5
       `);
-      
+
       // Get event statistics
       const eventStatsResult = await client.query(`
         SELECT
@@ -805,10 +836,16 @@ router.get("/summary", async (req, res, next) => {
       // Get library summary
       const libraryStatsResult = await client.query(`
         SELECT
-          COUNT(*) as total_books,
-          SUM(copies_available) as available_books,
-          COUNT(*) - SUM(copies_available) as borrowed_books
-        FROM library_books
+  COUNT(*) as total_books,
+  SUM(CASE 
+        WHEN copies_available IS NULL THEN 0
+        WHEN copies_available < 0 THEN 0
+        ELSE copies_available 
+      END) as available_books,
+  SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_titles,
+  SUM(CASE WHEN status = 'borrowed' THEN 1 ELSE 0 END) as borrowed_titles,
+  SUM(total_copies) as total_copies
+FROM library_books
       `);
 
       // Check if the academic_records table exists - since it's not in your schema
@@ -824,7 +861,8 @@ router.get("/summary", async (req, res, next) => {
 
       // If academic_records doesn't exist, use exam_results instead
       if (!academicRecordsTableExists.rows[0].exists) {
-        formPerformanceResult = await client.query(`
+        formPerformanceResult = await client.query(
+          `
           SELECT 
             c.curriculum_type,
             CASE 
@@ -849,7 +887,9 @@ router.get("/summary", async (req, res, next) => {
           WHERE e.academic_session_id = $1
           GROUP BY c.curriculum_type, c.level
           ORDER BY c.curriculum_type, c.level
-        `, [currentSession.id]);
+        `,
+          [currentSession.id]
+        );
       }
 
       // Get teacher stats by department
@@ -1148,7 +1188,7 @@ router.get(
   }
 );
 
-router.get('/', authorizeRoles("admin", "teacher"),async (req, res) => {
+router.get("/", authorizeRoles("admin", "teacher"), async (req, res) => {
   try {
     // Execute all queries in parallel for better performance
     const [
@@ -1159,7 +1199,7 @@ router.get('/', authorizeRoles("admin", "teacher"),async (req, res) => {
       libraryBooksResult,
       transportUsageResult,
       attendanceDataResult,
-      recentActivitiesResult
+      recentActivitiesResult,
     ] = await Promise.all([
       getTotalStudents(),
       getTotalTeachers(),
@@ -1168,7 +1208,7 @@ router.get('/', authorizeRoles("admin", "teacher"),async (req, res) => {
       getLibraryBooks(),
       getTransportUsage(),
       getAttendanceData(),
-      getRecentActivities()
+      getRecentActivities(),
     ]);
 
     res.json({
@@ -1179,11 +1219,11 @@ router.get('/', authorizeRoles("admin", "teacher"),async (req, res) => {
       libraryBooks: libraryBooksResult,
       transportUsage: transportUsageResult,
       attendanceData: attendanceDataResult,
-      recentActivities: recentActivitiesResult
+      recentActivities: recentActivitiesResult,
     });
   } catch (error) {
-    console.error('Dashboard data error:', error);
-    res.status(500).json({ error: 'Failed to fetch dashboard data' });
+    console.error("Dashboard data error:", error);
+    res.status(500).json({ error: "Failed to fetch dashboard data" });
   }
 });
 
@@ -1191,22 +1231,22 @@ router.get('/', authorizeRoles("admin", "teacher"),async (req, res) => {
 async function getTotalStudents() {
   // Get current academic session
   const currentSessionResult = await pool.query(
-    'SELECT id, year, term FROM academic_sessions WHERE is_current = TRUE'
+    "SELECT id, year, term FROM academic_sessions WHERE is_current = TRUE"
   );
   const currentSession = currentSessionResult.rows[0];
-  
+
   // If no current session, return default data
   if (!currentSession) {
     return { count: 0, growth: 0 };
   }
-  
+
   // Get total active students
   const totalStudentsResult = await pool.query(
-    'SELECT COUNT(*) FROM students WHERE status = $1',
-    ['active']
+    "SELECT COUNT(*) FROM students WHERE status = $1",
+    ["active"]
   );
   const totalStudents = parseInt(totalStudentsResult.rows[0].count);
-  
+
   // Get previous term data to calculate growth
   const prevTermResult = await pool.query(
     `SELECT id, year, term FROM academic_sessions 
@@ -1216,53 +1256,57 @@ async function getTotalStudents() {
      LIMIT 1`,
     [currentSession.year, currentSession.term]
   );
-  
+
   let growth = 0;
-  
+
   // Calculate growth if previous term exists
   if (prevTermResult.rows.length > 0) {
     const prevTermId = prevTermResult.rows[0].id;
-    
+
     const prevTermStudentsResult = await pool.query(
       `SELECT COUNT(DISTINCT student_id) 
        FROM student_subjects 
        WHERE academic_session_id = $1`,
       [prevTermId]
     );
-    
+
     const prevTermStudents = parseInt(prevTermStudentsResult.rows[0].count);
-    
+
     if (prevTermStudents > 0) {
       growth = ((totalStudents - prevTermStudents) / prevTermStudents) * 100;
     }
   }
-  
+
   return {
     count: totalStudents,
-    growth: parseFloat(growth.toFixed(1))
+    growth: parseFloat(growth.toFixed(1)),
   };
 }
 
 // Get total teachers with new additions this month
 async function getTotalTeachers() {
   const currentDate = new Date();
-  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-  
+  const firstDayOfMonth = new Date(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    1
+  );
+
   // Get total active teachers
   const totalTeachersResult = await pool.query(
-    'SELECT COUNT(*) FROM teachers WHERE status = $1',
-    ['active']
+    "SELECT COUNT(*) FROM teachers WHERE status = $1",
+    ["active"]
   );
-  
+
   // Get new teachers added this month
   const newTeachersResult = await pool.query(
-    'SELECT COUNT(*) FROM teachers WHERE created_at >= $1',
+    "SELECT COUNT(*) FROM teachers WHERE created_at >= $1",
     [firstDayOfMonth]
   );
-  
+
   return {
     count: parseInt(totalTeachersResult.rows[0].count),
-    newAdditions: parseInt(newTeachersResult.rows[0].count)
+    newAdditions: parseInt(newTeachersResult.rows[0].count),
   };
 }
 
@@ -1282,7 +1326,7 @@ async function getUpcomingEvents() {
      ORDER BY es.exam_date, es.start_time
      LIMIT 2`
   );
-  
+
   // Format the events for the dashboard
   // For demo purposes, we'll create two events: Sports Day and Science Fair
   return [
@@ -1290,14 +1334,14 @@ async function getUpcomingEvents() {
       title: "Sports Day",
       date: new Date(new Date().setDate(new Date().getDate() + 5)), // 5 days from now
       time: "9:00 AM",
-      category: "Sports"
+      category: "Sports",
     },
     {
       title: "Science Fair",
       date: new Date(new Date().setDate(new Date().getDate() + 10)), // 10 days from now
       time: "1:00 PM",
-      category: "Academic"
-    }
+      category: "Academic",
+    },
   ];
 }
 
@@ -1305,15 +1349,15 @@ async function getUpcomingEvents() {
 async function getClassPerformance() {
   // Get current academic session
   const currentSessionResult = await pool.query(
-    'SELECT id FROM academic_sessions WHERE is_current = TRUE'
+    "SELECT id FROM academic_sessions WHERE is_current = TRUE"
   );
-  
+
   if (currentSessionResult.rows.length === 0) {
     return [];
   }
-  
+
   const sessionId = currentSessionResult.rows[0].id;
-  
+
   // Get performance by form level for the current session
   const performanceData = await pool.query(
     `SELECT 
@@ -1330,43 +1374,47 @@ async function getClassPerformance() {
      ORDER BY form_level`,
     [sessionId]
   );
-  
+
   // Format the performance data
-  const formattedData = performanceData.rows.map(row => {
+  const formattedData = performanceData.rows.map((row) => {
     const score = parseFloat(row.average_score || 0).toFixed(0);
-    let status = 'Below average';
-    
+    let status = "Below average";
+
     if (score >= 80) {
-      status = 'Above average';
+      status = "Above average";
     } else if (score >= 70 && score < 80) {
-      status = 'Average';
+      status = "Average";
     }
-    
+
     return {
       form: `Form ${row.form_level}`,
       score: score,
-      status: status
+      status: status,
     };
   });
-  
+
   // If we don't have real data, provide dummy data for the dashboard
   if (formattedData.length === 0) {
     return [
-      { form: 'Form 1', score: '82', status: 'Above average' },
-      { form: 'Form 2', score: '78', status: 'Below average' },
-      { form: 'Form 3', score: '85', status: 'Above average' },
-      { form: 'Form 4', score: '88', status: 'Above average' }
+      { form: "Form 1", score: "82", status: "Above average" },
+      { form: "Form 2", score: "78", status: "Below average" },
+      { form: "Form 3", score: "85", status: "Above average" },
+      { form: "Form 4", score: "88", status: "Above average" },
     ];
   }
-  
+
   return formattedData;
 }
 
 // Get library books borrowed count
 async function getLibraryBooks() {
   const currentDate = new Date();
-  const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-  
+  const firstDayOfMonth = new Date(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    1
+  );
+
   // Get books borrowed this month
   const booksResult = await pool.query(
     `SELECT COUNT(*) 
@@ -1375,10 +1423,10 @@ async function getLibraryBooks() {
        AND status IN ('borrowed', 'overdue')`,
     [firstDayOfMonth]
   );
-  
+
   return {
     count: parseInt(booksResult.rows[0].count),
-    period: 'This month'
+    period: "This month",
   };
 }
 
@@ -1390,7 +1438,7 @@ async function getTransportUsage() {
      FROM transport_allocations
      WHERE status = 'active'`
   );
-  
+
   // Count total day scholars
   const dayScholarsResult = await pool.query(
     `SELECT COUNT(*) 
@@ -1398,18 +1446,18 @@ async function getTransportUsage() {
      WHERE student_type = 'day_scholar'
        AND status = 'active'`
   );
-  
+
   const transportUsers = parseInt(transportUsersResult.rows[0].count);
   const dayScholars = parseInt(dayScholarsResult.rows[0].count);
-  
+
   let percentage = 0;
   if (dayScholars > 0) {
     percentage = Math.round((transportUsers / dayScholars) * 100);
   }
-  
+
   return {
     percentage: percentage,
-    description: 'Students using school buses'
+    description: "Students using school buses",
   };
 }
 
@@ -1417,33 +1465,33 @@ async function getTransportUsage() {
 async function getAttendanceData() {
   // In a real app, this would fetch actual attendance data by week
   // For demo, we'll generate sample data for 3 terms
-  
+
   // Generate weekly attendance for 3 terms (13-14 weeks each)
   const term1Data = Array.from({ length: 13 }, (_, i) => ({
     week: `Week ${i + 1}`,
-    term: 'Term 1',
-    attendance: Math.floor(Math.random() * (470 - 430) + 430)
+    term: "Term 1",
+    attendance: Math.floor(Math.random() * (470 - 430) + 430),
   }));
-  
+
   const term2Data = Array.from({ length: 14 }, (_, i) => ({
     week: `Week ${i + 14}`,
-    term: 'Term 2',
-    attendance: Math.floor(Math.random() * (470 - 430) + 430)
+    term: "Term 2",
+    attendance: Math.floor(Math.random() * (470 - 430) + 430),
   }));
-  
+
   const term3Data = Array.from({ length: 14 }, (_, i) => ({
     week: `Week ${i + 28}`,
-    term: 'Term 3',
-    attendance: Math.floor(Math.random() * (470 - 430) + 430)
+    term: "Term 3",
+    attendance: Math.floor(Math.random() * (470 - 430) + 430),
   }));
-  
+
   return {
     terms: [
-      { id: 1, name: 'Term 1', period: '(Jan - March)' },
-      { id: 2, name: 'Term 2', period: '(May - July)' },
-      { id: 3, name: 'Term 3', period: '(Sept - Nov)' }
+      { id: 1, name: "Term 1", period: "(Jan - March)" },
+      { id: 2, name: "Term 2", period: "(May - July)" },
+      { id: 3, name: "Term 3", period: "(Sept - Nov)" },
     ],
-    weeklyData: [...term1Data, ...term2Data, ...term3Data]
+    weeklyData: [...term1Data, ...term2Data, ...term3Data],
   };
 }
 
@@ -1456,56 +1504,61 @@ async function getRecentActivities() {
      ORDER BY created_at DESC
      LIMIT 1`
   );
-  
+
   // Recent activities would typically come from an activity log table
   // For demo purposes, we'll create sample activities
   const activities = [];
-  
+
   if (newStudentResult.rows.length > 0) {
     const student = newStudentResult.rows[0];
     activities.push({
-      type: 'student_admission',
+      type: "student_admission",
       title: `New student admission - ${student.first_name} ${student.last_name}`,
       timestamp: student.created_at,
-      timeAgo: '2 hours ago'
+      timeAgo: "2 hours ago",
     });
   }
-  
+
   // Add more sample activities
   activities.push(
     {
-      type: 'parent_meeting',
-      title: 'Parent meeting scheduled for Form 4',
+      type: "parent_meeting",
+      title: "Parent meeting scheduled for Form 4",
       timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000), // 5 hours ago
-      timeAgo: '5 hours ago'
+      timeAgo: "5 hours ago",
     },
     {
-      type: 'library',
-      title: 'New books added to library inventory',
+      type: "library",
+      title: "New books added to library inventory",
       timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
-      timeAgo: '1 day ago'
+      timeAgo: "1 day ago",
     }
   );
-  
+
   return activities;
 }
 
-router.get('/form-performance',authorizeRoles("admin", "teacher"), async (req, res) => {
-  try {
-    // Get current academic session
-    const sessionResult = await pool.query(
-      'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
-    );
-    
-    if (sessionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'No current academic session found' });
-    }
-    
-    const currentSessionId = sessionResult.rows[0].id;
-    
-    // Get previous academic session (for trend comparison)
-    const previousSessionResult = await pool.query(
-      `SELECT id FROM academic_sessions 
+router.get(
+  "/form-performance",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      // Get current academic session
+      const sessionResult = await pool.query(
+        "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
+      );
+
+      if (sessionResult.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "No current academic session found" });
+      }
+
+      const currentSessionId = sessionResult.rows[0].id;
+
+      // Get previous academic session (for trend comparison)
+      const previousSessionResult = await pool.query(
+        `SELECT id FROM academic_sessions 
        WHERE term = (
          SELECT term FROM academic_sessions WHERE id = $1
        ) 
@@ -1514,30 +1567,33 @@ router.get('/form-performance',authorizeRoles("admin", "teacher"), async (req, r
        )
        ORDER BY year::integer DESC, term DESC
        LIMIT 1`,
-      [currentSessionId]
-    );
-    
-    const previousSessionId = previousSessionResult.rows.length > 0 ? 
-      previousSessionResult.rows[0].id : null;
-    
-    // Get all distinct class names/levels from the classes table
-    const classLevelsResult = await pool.query(
-      `SELECT DISTINCT level 
+        [currentSessionId]
+      );
+
+      const previousSessionId =
+        previousSessionResult.rows.length > 0
+          ? previousSessionResult.rows[0].id
+          : null;
+
+      // Get all distinct class names/levels from the classes table
+      const classLevelsResult = await pool.query(
+        `SELECT DISTINCT level 
        FROM classes 
        WHERE academic_session_id = $1
        AND level IS NOT NULL
        ORDER BY level`,
-      [currentSessionId]
-    );
-    
-    // Extract all class levels, or use default forms if none exist
-    const allClassLevels = classLevelsResult.rows.length > 0 
-      ? classLevelsResult.rows.map(row => row.level) 
-      : ['Form 1', 'Form 2', 'Form 3', 'Form 4'];
-    
-    // Query to get current performance by class level
-    const currentResults = await pool.query(
-      `SELECT 
+        [currentSessionId]
+      );
+
+      // Extract all class levels, or use default forms if none exist
+      const allClassLevels =
+        classLevelsResult.rows.length > 0
+          ? classLevelsResult.rows.map((row) => row.level)
+          : ["Form 1", "Form 2", "Form 3", "Form 4"];
+
+      // Query to get current performance by class level
+      const currentResults = await pool.query(
+        `SELECT 
          c.level as class_level,
          ROUND(AVG(srs.average_marks), 2) as average_marks
        FROM student_result_summary srs
@@ -1546,14 +1602,14 @@ router.get('/form-performance',authorizeRoles("admin", "teacher"), async (req, r
        WHERE e.academic_session_id = $1
        GROUP BY class_level
        ORDER BY class_level`,
-      [currentSessionId]
-    );
-    
-    // If there's a previous session, get that data for trend comparison
-    let previousResults = [];
-    if (previousSessionId) {
-      previousResults = await pool.query(
-        `SELECT 
+        [currentSessionId]
+      );
+
+      // If there's a previous session, get that data for trend comparison
+      let previousResults = [];
+      if (previousSessionId) {
+        previousResults = await pool.query(
+          `SELECT 
            c.level as class_level,
            ROUND(AVG(srs.average_marks), 2) as average_marks
          FROM student_result_summary srs
@@ -1562,152 +1618,170 @@ router.get('/form-performance',authorizeRoles("admin", "teacher"), async (req, r
          WHERE e.academic_session_id = $1
          GROUP BY class_level
          ORDER BY class_level`,
-        [previousSessionId]
-      );
-    }
-    
-    // Get overall average across all forms for the current session
-    const overallAvgResult = await pool.query(
-      `SELECT ROUND(AVG(srs.average_marks), 2) as overall_average
+          [previousSessionId]
+        );
+      }
+
+      // Get overall average across all forms for the current session
+      const overallAvgResult = await pool.query(
+        `SELECT ROUND(AVG(srs.average_marks), 2) as overall_average
        FROM student_result_summary srs
        JOIN examinations e ON srs.examination_id = e.id
        WHERE e.academic_session_id = $1`,
-      [currentSessionId]
-    );
-    
-    const overallAverage = overallAvgResult.rows[0]?.overall_average || 0;
-    
-    // Format the response, ensuring all class levels are included even without data
-    const formData = allClassLevels.map(classLevel => {
-      // Find matching current data for this class level
-      const current = currentResults.rows.find(c => c.class_level === classLevel);
-      
-      // If no data exists for this class level, create default values
-      if (!current) {
+        [currentSessionId]
+      );
+
+      const overallAverage = overallAvgResult.rows[0]?.overall_average || 0;
+
+      // Format the response, ensuring all class levels are included even without data
+      const formData = allClassLevels.map((classLevel) => {
+        // Find matching current data for this class level
+        const current = currentResults.rows.find(
+          (c) => c.class_level === classLevel
+        );
+
+        // If no data exists for this class level, create default values
+        if (!current) {
+          return {
+            form: classLevel,
+            average: 0,
+            trend: "stable",
+            status: "No data",
+          };
+        }
+
+        // Find matching previous data for this class level
+        const previous = previousResults.rows.find(
+          (p) => p.class_level === current.class_level
+        );
+
+        // Determine trend
+        let trend = "stable";
+        if (previous) {
+          trend =
+            current.average_marks > previous.average_marks
+              ? "up"
+              : current.average_marks < previous.average_marks
+              ? "down"
+              : "stable";
+        }
+
+        // Determine status compared to overall average
+        const status =
+          current.average_marks >= overallAverage
+            ? "Above average"
+            : "Below average";
+
         return {
-          form: classLevel,
-          average: 0,
-          trend: "stable",
-          status: "No data",
+          form: current.class_level,
+          average: parseFloat(current.average_marks),
+          trend,
+          status,
+          // You could add more data points here as needed
         };
-      }
-      
-      // Find matching previous data for this class level
-      const previous = previousResults.rows.find(p => p.class_level === current.class_level);
-      
-      // Determine trend
-      let trend = "stable";
-      if (previous) {
-        trend = current.average_marks > previous.average_marks ? "up" : 
-               current.average_marks < previous.average_marks ? "down" : "stable";
-      }
-      
-      // Determine status compared to overall average
-      const status = current.average_marks >= overallAverage ? "Above average" : "Below average";
-      
-      return {
-        form: current.class_level,
-        average: parseFloat(current.average_marks),
-        trend,
-        status,
-        // You could add more data points here as needed
-      };
-    });
-    
-    res.json(formData);
-    
-  } catch (error) {
-    console.error('Error fetching form performance data:', error);
-    res.status(500).json({ error: 'Failed to fetch form performance data' });
+      });
+
+      res.json(formData);
+    } catch (error) {
+      console.error("Error fetching form performance data:", error);
+      res.status(500).json({ error: "Failed to fetch form performance data" });
+    }
   }
-});
+);
 
 /**
  * GET /api/analytics/form-performance/:classLevel
  * Retrieves detailed performance data for a specific class level
  */
-router.get('/form-performance/:classLevel', authorizeRoles("admin", "teacher"),async (req, res) => {
-  try {
-    const { classLevel } = req.params;
-    
-    // Get current academic session
-    const sessionResult = await pool.query(
-      'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
-    );
-    
-    if (sessionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'No current academic session found' });
-    }
-    
-    const currentSessionId = sessionResult.rows[0].id;
-    
-    // Get all classes with this level
-    const classesResult = await pool.query(
-      `SELECT id, name, stream 
+router.get(
+  "/form-performance/:classLevel",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      const { classLevel } = req.params;
+
+      // Get current academic session
+      const sessionResult = await pool.query(
+        "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
+      );
+
+      if (sessionResult.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "No current academic session found" });
+      }
+
+      const currentSessionId = sessionResult.rows[0].id;
+
+      // Get all classes with this level
+      const classesResult = await pool.query(
+        `SELECT id, name, stream 
        FROM classes 
        WHERE level = $1 
        AND academic_session_id = $2`,
-      [classLevel, currentSessionId]
-    );
-    
-    // If no classes found, create a default empty class to avoid empty response
-    if (classesResult.rows.length === 0) {
-      classesResult.rows = [{
-        id: null,
-        name: classLevel,
-        stream: 'Default'
-      }];
-    }
-    
-    // Get performance by stream
-    const streamPerformance = await Promise.all(
-      classesResult.rows.map(async (classInfo) => {
-        // If the class ID is null (default empty class), return default values
-        if (classInfo.id === null) {
-          return {
-            stream: classInfo.stream,
-            className: classInfo.name,
-            average: 0,
-            studentCount: 0
-          };
-        }
-        
-        const streamResult = await pool.query(
-          `SELECT 
+        [classLevel, currentSessionId]
+      );
+
+      // If no classes found, create a default empty class to avoid empty response
+      if (classesResult.rows.length === 0) {
+        classesResult.rows = [
+          {
+            id: null,
+            name: classLevel,
+            stream: "Default",
+          },
+        ];
+      }
+
+      // Get performance by stream
+      const streamPerformance = await Promise.all(
+        classesResult.rows.map(async (classInfo) => {
+          // If the class ID is null (default empty class), return default values
+          if (classInfo.id === null) {
+            return {
+              stream: classInfo.stream,
+              className: classInfo.name,
+              average: 0,
+              studentCount: 0,
+            };
+          }
+
+          const streamResult = await pool.query(
+            `SELECT 
              ROUND(AVG(srs.average_marks), 2) as average_marks,
              COUNT(DISTINCT srs.student_id) as student_count
            FROM student_result_summary srs
            JOIN examinations e ON srs.examination_id = e.id
            WHERE srs.class_id = $1
            AND e.academic_session_id = $2`,
-          [classInfo.id, currentSessionId]
-        );
-        
-        return {
-          stream: classInfo.stream,
-          className: classInfo.name,
-          average: parseFloat(streamResult.rows[0]?.average_marks || 0),
-          studentCount: parseInt(streamResult.rows[0]?.student_count || 0)
-        };
-      })
-    );
-    
-    // First, get all subjects for this curriculum and level
-    let allSubjects = await pool.query(
-      `SELECT id, name FROM subjects 
+            [classInfo.id, currentSessionId]
+          );
+
+          return {
+            stream: classInfo.stream,
+            className: classInfo.name,
+            average: parseFloat(streamResult.rows[0]?.average_marks || 0),
+            studentCount: parseInt(streamResult.rows[0]?.student_count || 0),
+          };
+        })
+      );
+
+      // First, get all subjects for this curriculum and level
+      let allSubjects = await pool.query(
+        `SELECT id, name FROM subjects 
        WHERE level = $1 OR level = 'All' 
        ORDER BY name`,
-      [classLevel]
-    );
-    
-    // If no subjects found, create empty array to avoid errors
-    if (allSubjects.rows.length === 0) {
-      allSubjects.rows = [];
-    }
-    
-    // Now get performance data for subjects that have exam results
-    const subjectPerformanceData = await pool.query(
-      `SELECT 
+        [classLevel]
+      );
+
+      // If no subjects found, create empty array to avoid errors
+      if (allSubjects.rows.length === 0) {
+        allSubjects.rows = [];
+      }
+
+      // Now get performance data for subjects that have exam results
+      const subjectPerformanceData = await pool.query(
+        `SELECT 
          s.id as subject_id,
          s.name as subject_name,
          ROUND(AVG(er.marks_obtained), 2) as average_marks
@@ -1720,23 +1794,25 @@ router.get('/form-performance/:classLevel', authorizeRoles("admin", "teacher"),a
        AND e.academic_session_id = $2
        GROUP BY s.id, s.name
        ORDER BY average_marks DESC`,
-      [classLevel, currentSessionId]
-    );
-    
-    // Merge the data to include all subjects, with zeros for those without data
-    const subjectPerformance = {
-      rows: allSubjects.rows.map(subject => {
-        const performance = subjectPerformanceData.rows.find(p => p.subject_id === subject.id);
-        return {
-          subject_name: subject.name,
-          average_marks: performance ? performance.average_marks : 0
-        };
-      })
-    };
-    
-    // Get gender performance breakdown
-    const genderPerformanceData = await pool.query(
-      `SELECT 
+        [classLevel, currentSessionId]
+      );
+
+      // Merge the data to include all subjects, with zeros for those without data
+      const subjectPerformance = {
+        rows: allSubjects.rows.map((subject) => {
+          const performance = subjectPerformanceData.rows.find(
+            (p) => p.subject_id === subject.id
+          );
+          return {
+            subject_name: subject.name,
+            average_marks: performance ? performance.average_marks : 0,
+          };
+        }),
+      };
+
+      // Get gender performance breakdown
+      const genderPerformanceData = await pool.query(
+        `SELECT 
          st.gender,
          ROUND(AVG(srs.average_marks), 2) as average_marks,
          COUNT(DISTINCT st.id) as student_count
@@ -1747,42 +1823,48 @@ router.get('/form-performance/:classLevel', authorizeRoles("admin", "teacher"),a
        WHERE c.level = $1
        AND e.academic_session_id = $2
        GROUP BY st.gender`,
-      [classLevel, currentSessionId]
-    );
-    
-    // Ensure we have all genders represented, even if no data
-    const allGenders = ['male', 'female', 'other'];
-    const genderPerformance = {
-      rows: allGenders.map(gender => {
-        const performance = genderPerformanceData.rows.find(p => p.gender === gender);
-        return performance || { 
-          gender: gender, 
-          average_marks: 0, 
-          student_count: 0 
-        };
-      })
-    };
-    
-    const detailedFormData = {
-      classLevel: classLevel,
-      streamPerformance,
-      subjectPerformance: subjectPerformance.rows.map(subject => ({
-        subject: subject.subject_name,
-        average: parseFloat(subject.average_marks)
-      })),
-      genderPerformance: genderPerformance.rows.map(gender => ({
-        gender: gender.gender,
-        average: parseFloat(gender.average_marks),
-        count: parseInt(gender.student_count)
-      }))
-    };
-    
-    res.json(detailedFormData);
-    
-  } catch (error) {
-    console.error('Error fetching detailed form performance data:', error);
-    res.status(500).json({ error: 'Failed to fetch detailed form performance data' });
+        [classLevel, currentSessionId]
+      );
+
+      // Ensure we have all genders represented, even if no data
+      const allGenders = ["male", "female", "other"];
+      const genderPerformance = {
+        rows: allGenders.map((gender) => {
+          const performance = genderPerformanceData.rows.find(
+            (p) => p.gender === gender
+          );
+          return (
+            performance || {
+              gender: gender,
+              average_marks: 0,
+              student_count: 0,
+            }
+          );
+        }),
+      };
+
+      const detailedFormData = {
+        classLevel: classLevel,
+        streamPerformance,
+        subjectPerformance: subjectPerformance.rows.map((subject) => ({
+          subject: subject.subject_name,
+          average: parseFloat(subject.average_marks),
+        })),
+        genderPerformance: genderPerformance.rows.map((gender) => ({
+          gender: gender.gender,
+          average: parseFloat(gender.average_marks),
+          count: parseInt(gender.student_count),
+        })),
+      };
+
+      res.json(detailedFormData);
+    } catch (error) {
+      console.error("Error fetching detailed form performance data:", error);
+      res
+        .status(500)
+        .json({ error: "Failed to fetch detailed form performance data" });
+    }
   }
-});
+);
 
 export default router;
