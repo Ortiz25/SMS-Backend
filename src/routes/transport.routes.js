@@ -592,22 +592,32 @@ router.get('/allocations', authorizeRoles('admin', 'teacher'), async (req, res) 
         });
       }
       
-      // Check if student is already allocated somewhere else in the same session
+      // Check if student already has an allocation in this academic session
       const studentAllocationResult = await pool.query(
         `SELECT * FROM dormitory_allocations 
-         WHERE student_id = $1 AND academic_session_id = $2 AND status = 'active'`,
+         WHERE student_id = $1 AND academic_session_id = $2`,
         [student_id, academic_session_id]
       );
       
       if (studentAllocationResult.rows.length > 0) {
-        await pool.query('ROLLBACK');
-        return res.status(400).json({
-          success: false,
-          message: 'Student is already allocated to a dormitory in this academic session'
-        });
+        const previousAllocation = studentAllocationResult.rows[0];
+        
+        if (previousAllocation.status === 'active') {
+          await pool.query('ROLLBACK');
+          return res.status(400).json({
+            success: false,
+            message: 'Student is already allocated to a dormitory in this academic session'
+          });
+        } else if (previousAllocation.status === 'vacated' || previousAllocation.status === 'transferred') {
+          // Delete the previous allocation record
+          await pool.query(
+            `DELETE FROM dormitory_allocations WHERE id = $1`,
+            [previousAllocation.id]
+          );
+        }
       }
       
-      // Create the allocation
+      // Create new allocation
       const result = await pool.query(
         `INSERT INTO dormitory_allocations 
         (student_id, room_id, bed_number, academic_session_id, allocation_date, status) 

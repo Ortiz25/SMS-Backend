@@ -517,66 +517,86 @@ router.post(
   }
 );
 
-router.post(
-  "/books/:id/borrow",
-  authorizeRoles("admin", "librarian"),
-  async (req, res, next) => {
-    try {
-      const bookId = parseInt(req.params.id, 10);
-      const {
-        borrower_name,
-        borrower_type,
-        borrower_contact,
-        borrow_date,
-        due_date,
-      } = req.body;
+// Route for borrowing a book
+router.post('/books/:id/borrow', authenticateToken, async (req, res) => {
+  try {
+    const bookId = req.params.id;
+    const { borrower_name, borrower_type, borrower_contact, borrow_date, due_date } = req.body;
 
-      // Check if book is available
-      const bookQuery = `SELECT copies_available FROM library_books WHERE id = $1;`;
-      const bookResult = await pool.query(bookQuery, [bookId]);
+    // Check if the book exists and has available copies
+    const bookQuery = await pool.query(
+      'SELECT * FROM library_books WHERE id = $1',
+      [bookId]
+    );
 
-      if (bookResult.rows.length === 0) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Book not found" });
-      }
+    if (bookQuery.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Book not found' });
+    }
 
-      if (bookResult.rows[0].copies_available < 1) {
-        return res.status(400).json({
-          success: false,
-          error: "Book is not available for borrowing",
+    const book = bookQuery.rows[0];
+    
+    if (book.copies_available <= 0) {
+      return res.status(400).json({ success: false, error: 'No copies available for borrowing' });
+    }
+
+    // Check if student with the admission number exists
+    // This is the new check we're adding
+    if (borrower_type === 'student') {
+      const studentQuery = await pool.query(
+        'SELECT * FROM students WHERE admission_number = $1',
+        [borrower_contact]
+      );
+
+      if (studentQuery.rows.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Student with this admission number does not exist' 
         });
       }
+    }
 
-      // Insert into book_borrowing
-      const borrowQuery = `
-        INSERT INTO book_borrowing (book_id, borrower_name, borrower_type, borrower_contact, borrow_date, due_date, status)
-        VALUES ($1, $2, $3, $4, $5, $6, 'borrowed') RETURNING *;
-      `;
-      await pool.query(borrowQuery, [
+    // Proceed with borrowing process
+    const borrowQuery = await pool.query(
+      `INSERT INTO book_borrowing (
+        book_id, 
+        borrower_name, 
+        borrower_type, 
+        borrower_contact, 
+        borrow_date, 
+        due_date, 
+        status, 
+        issued_by
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, 'borrowed', $7)
+      RETURNING *`,
+      [
         bookId,
         borrower_name,
         borrower_type,
         borrower_contact,
         borrow_date,
         due_date,
-      ]);
+        req.user.id
+      ]
+    );
 
-      // Update copies_available
-      const updateBookQuery = `
-        UPDATE library_books 
-        SET copies_available = copies_available - 1, status = CASE WHEN copies_available - 1 = 0 THEN 'borrowed' ELSE 'available' END
-        WHERE id = $1 RETURNING *;
-      `;
-      const updatedBook = await pool.query(updateBookQuery, [bookId]);
+    // Update book available copies
+    await pool.query(
+      'UPDATE library_books SET copies_available = copies_available - 1 WHERE id = $1',
+      [bookId]
+    );
 
-      res.json({ success: true, data: updatedBook.rows[0] });
-    } catch (error) {
-      console.error("Error borrowing book:", error);
-      next(error);
-    }
+    res.json({ 
+      success: true, 
+      message: 'Book borrowed successfully', 
+      data: borrowQuery.rows[0] 
+    });
+  } catch (error) {
+    console.error('Error borrowing book:', error);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
-);
+});
+
 
 router.post(
   "/books/:id/extend",
