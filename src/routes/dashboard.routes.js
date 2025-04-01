@@ -1543,6 +1543,9 @@ router.get(
   authorizeRoles("admin", "teacher"),
   async (req, res) => {
     try {
+      // Get query params with defaults
+      const { examId } = req.query;
+
       // Get current academic session
       const sessionResult = await pool.query(
         "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
@@ -1591,97 +1594,162 @@ router.get(
           ? classLevelsResult.rows.map((row) => row.level)
           : ["Form 1", "Form 2", "Form 3", "Form 4"];
 
-      // Query to get current performance by class level
-      const currentResults = await pool.query(
-        `SELECT 
-         c.level as class_level,
-         ROUND(AVG(srs.average_marks), 2) as average_marks
-       FROM student_result_summary srs
-       JOIN classes c ON srs.class_id = c.id
-       JOIN examinations e ON srs.examination_id = e.id
-       WHERE e.academic_session_id = $1
-       GROUP BY class_level
-       ORDER BY class_level`,
-        [currentSessionId]
-      );
-
-      // If there's a previous session, get that data for trend comparison
-      let previousResults = [];
-      if (previousSessionId) {
-        previousResults = await pool.query(
-          `SELECT 
-           c.level as class_level,
-           ROUND(AVG(srs.average_marks), 2) as average_marks
-         FROM student_result_summary srs
-         JOIN classes c ON srs.class_id = c.id
-         JOIN examinations e ON srs.examination_id = e.id
-         WHERE e.academic_session_id = $1
-         GROUP BY class_level
-         ORDER BY class_level`,
-          [previousSessionId]
+      // Get all examinations for the current session (if no specific exam is requested)
+      let examinations;
+      
+      if (examId) {
+        // Get specific examination if examId is provided
+        const examinationResult = await pool.query(
+          `SELECT id, name, exam_type_id, status
+           FROM examinations
+           WHERE id = $1 AND academic_session_id = $2`,
+          [examId, currentSessionId]
         );
+        
+        if (examinationResult.rows.length === 0) {
+          return res.status(404).json({ error: "Examination not found" });
+        }
+        
+        examinations = examinationResult.rows;
+      } else {
+        // Get all completed and ongoing examinations for the current session
+        const examinationsResult = await pool.query(
+          `SELECT id, name, exam_type_id, status
+           FROM examinations
+           WHERE academic_session_id = $1
+           AND status IN ('completed', 'ongoing')
+           ORDER BY id`,
+          [currentSessionId]
+        );
+        
+        examinations = examinationsResult.rows;
       }
 
-      // Get overall average across all forms for the current session
-      const overallAvgResult = await pool.query(
-        `SELECT ROUND(AVG(srs.average_marks), 2) as overall_average
-       FROM student_result_summary srs
-       JOIN examinations e ON srs.examination_id = e.id
-       WHERE e.academic_session_id = $1`,
-        [currentSessionId]
-      );
+      // Initialize the response object
+      const response = {
+        currentSession: {
+          id: currentSessionId
+        },
+        previousSession: previousSessionId ? { id: previousSessionId } : null,
+        examinations: [],
+      };
 
-      const overallAverage = overallAvgResult.rows[0]?.overall_average || 0;
-
-      // Format the response, ensuring all class levels are included even without data
-      const formData = allClassLevels.map((classLevel) => {
-        // Find matching current data for this class level
-        const current = currentResults.rows.find(
-          (c) => c.class_level === classLevel
+      // Process each examination
+      for (const exam of examinations) {
+        // Query to get current performance by class level for this examination
+        const currentResults = await pool.query(
+          `SELECT 
+            c.level as class_level,
+            ROUND(AVG(srs.average_marks), 2) as average_marks
+          FROM student_result_summary srs
+          JOIN classes c ON srs.class_id = c.id
+          WHERE srs.examination_id = $1
+          GROUP BY class_level
+          ORDER BY class_level`,
+          [exam.id]
         );
 
-        // If no data exists for this class level, create default values
-        if (!current) {
+        // If there's a previous session, get that data for trend comparison
+        let previousResults = [];
+        let previousExamId = null;
+        
+        if (previousSessionId) {
+          // Try to find a matching examination from previous session (same exam_type_id)
+          const previousExamResult = await pool.query(
+            `SELECT id 
+             FROM examinations 
+             WHERE academic_session_id = $1 
+             AND exam_type_id = $2
+             AND status = 'completed'
+             LIMIT 1`,
+            [previousSessionId, exam.exam_type_id]
+          );
+
+          if (previousExamResult.rows.length > 0) {
+            previousExamId = previousExamResult.rows[0].id;
+            
+            previousResults = await pool.query(
+              `SELECT 
+               c.level as class_level,
+               ROUND(AVG(srs.average_marks), 2) as average_marks
+              FROM student_result_summary srs
+              JOIN classes c ON srs.class_id = c.id
+              WHERE srs.examination_id = $1
+              GROUP BY class_level
+              ORDER BY class_level`,
+              [previousExamId]
+            );
+          }
+        }
+
+        // Get overall average across all forms for the current examination
+        const overallAvgResult = await pool.query(
+          `SELECT ROUND(AVG(srs.average_marks), 2) as overall_average
+           FROM student_result_summary srs
+           WHERE srs.examination_id = $1`,
+          [exam.id]
+        );
+
+        const overallAverage = overallAvgResult.rows[0]?.overall_average || 0;
+
+        // Format the response for this examination
+        const formData = allClassLevels.map((classLevel) => {
+          // Find matching current data for this class level
+          const current = currentResults.rows.find(
+            (c) => c.class_level === classLevel
+          );
+
+          // If no data exists for this class level, create default values
+          if (!current) {
+            return {
+              form: classLevel,
+              average: 0,
+              trend: "stable",
+              status: "No data",
+            };
+          }
+
+          // Find matching previous data for this class level
+          const previous = previousResults.rows?.find(
+            (p) => p.class_level === current.class_level
+          );
+
+          // Determine trend
+          let trend = "stable";
+          if (previous) {
+            trend =
+              current.average_marks > previous.average_marks
+                ? "up"
+                : current.average_marks < previous.average_marks
+                ? "down"
+                : "stable";
+          }
+
+          // Determine status compared to overall average
+          const status =
+            current.average_marks >= overallAverage
+              ? "Above average"
+              : "Below average";
+
           return {
-            form: classLevel,
-            average: 0,
-            trend: "stable",
-            status: "No data",
+            form: current.class_level,
+            average: parseFloat(current.average_marks),
+            trend,
+            status,
           };
-        }
+        });
 
-        // Find matching previous data for this class level
-        const previous = previousResults.rows.find(
-          (p) => p.class_level === current.class_level
-        );
+        // Add this examination's data to the response
+        response.examinations.push({
+          id: exam.id,
+          name: exam.name,
+          status: exam.status,
+          overallAverage,
+          formData
+        });
+      }
 
-        // Determine trend
-        let trend = "stable";
-        if (previous) {
-          trend =
-            current.average_marks > previous.average_marks
-              ? "up"
-              : current.average_marks < previous.average_marks
-              ? "down"
-              : "stable";
-        }
-
-        // Determine status compared to overall average
-        const status =
-          current.average_marks >= overallAverage
-            ? "Above average"
-            : "Below average";
-
-        return {
-          form: current.class_level,
-          average: parseFloat(current.average_marks),
-          trend,
-          status,
-          // You could add more data points here as needed
-        };
-      });
-
-      res.json(formData);
+      res.json(response);
     } catch (error) {
       console.error("Error fetching form performance data:", error);
       res.status(500).json({ error: "Failed to fetch form performance data" });
