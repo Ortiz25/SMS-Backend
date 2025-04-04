@@ -137,6 +137,11 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
       auto_restore
     } = req.body;
     
+    // Handle empty date values
+    const formattedFollowUp = follow_up === "" ? null : follow_up;
+    const formattedEffectiveDate = effective_date === "" ? null : effective_date;
+    const formattedEndDate = end_date === "" ? null : end_date;
+    
     // Validate student exists by admission number
     const studentCheck = await client.query('SELECT id, status FROM students WHERE admission_number = $1', [admissionNumber]);
     if (studentCheck.rows.length === 0) {
@@ -166,11 +171,11 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
       witnesses,
       action,
       status || 'Pending',
-      follow_up,
+      formattedFollowUp,  // Use the formatted value
       affects_status || false,
       status_change,
-      effective_date,
-      end_date,
+      formattedEffectiveDate,  // Use the formatted value
+      formattedEndDate,  // Use the formatted value
       auto_restore || true
     ];
     
@@ -195,8 +200,8 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
           student.id,
           student.status,
           status_change,
-          effective_date || new Date(),
-          end_date,
+          formattedEffectiveDate || new Date(),  // Use formatted value
+          formattedEndDate,  // Use formatted value
           'disciplinary',
           newIncident.id,
           req.user.id,
@@ -269,6 +274,11 @@ router.put('/incidents/:id', authorizeRoles('admin', 'teacher'), async (req, res
     
     const existingIncident = incidentCheck.rows[0];
     
+    // Handle empty date values
+    const formattedFollowUp = follow_up === "" ? null : follow_up;
+    const formattedEffectiveDate = effective_date === "" ? null : effective_date;
+    const formattedEndDate = end_date === "" ? null : end_date;
+    
     // Update the incident
     const updateQuery = `
       UPDATE disciplinary_incidents
@@ -289,12 +299,12 @@ router.put('/incidents/:id', authorizeRoles('admin', 'teacher'), async (req, res
       witnesses,
       action,
       status,
-      follow_up,
+      formattedFollowUp,  // Use the formatted value
       resolution_notes,
       affects_status || false,
       status_change,
-      effective_date,
-      end_date,
+      formattedEffectiveDate,  // Use the formatted value
+      formattedEndDate,  // Use the formatted value
       auto_restore !== undefined ? auto_restore : true,
       id
     ];

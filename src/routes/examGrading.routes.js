@@ -13,7 +13,7 @@ router.use(authenticateToken);
  * @desc    Get all exam types
  * @access  Private
  */
-router.get('/types',authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
+router.get('/types',authorizeRoles('admin', 'teacher'), async (req, res) => {
   try {
     const examTypes = await pool.query(
       `SELECT * FROM exam_types ORDER BY name`
@@ -30,28 +30,53 @@ router.get('/types',authorizeRoles('admin', 'teacher', 'staff'), async (req, res
  * @desc    Get all examinations (can be filtered by academic session)
  * @access  Private
  */
-router.get('/',authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
+router.get('/', authorizeRoles('admin', 'teacher'), async (req, res) => {
   try {
     const { academic_session_id } = req.query;
     
-    let query = `
-      SELECT e.*, et.name as exam_type_name 
-      FROM examinations e
-      JOIN exam_types et ON e.exam_type_id = et.id
-    `;
-    
+    // Base params array
     const params = [];
+    let paramIndex = 1;
     
+    // Condition for academic session filtering
+    let academicSessionCondition = '';
     if (academic_session_id) {
-      query += ` WHERE e.academic_session_id = $1`;
+      academicSessionCondition = ` WHERE e.academic_session_id = $${paramIndex}`;
       params.push(academic_session_id);
+      paramIndex++;
     }
     
-    query += ` ORDER BY e.start_date DESC`;
+    // Query for examination details
+    let examinationsQuery = `
+      SELECT 
+        e.*, 
+        et.name as exam_type_name
+      FROM examinations e
+      JOIN exam_types et ON e.exam_type_id = et.id
+      ${academicSessionCondition}
+      ORDER BY e.start_date DESC
+    `;
     
-    const examinations = await pool.query(query, params);
+    // Query for aggregated stats
+    let statsQuery = `
+      SELECT 
+        COUNT(DISTINCT es.id) as "totalExams",
+        COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM exam_results er WHERE er.exam_schedule_id = es.id) THEN es.id END) as "gradedExams",
+        COUNT(DISTINCT CASE WHEN NOT EXISTS (SELECT 1 FROM exam_results er WHERE er.exam_schedule_id = es.id) THEN es.id END) as "pendingExams",
+        COALESCE(ROUND(AVG(er.marks_obtained), 1), 0) as "classAverage"
+      FROM examinations e
+      JOIN exam_schedules es ON e.id = es.examination_id
+      LEFT JOIN exam_results er ON es.id = er.exam_schedule_id
+      ${academicSessionCondition ? academicSessionCondition.replace('WHERE e.', 'WHERE e.') : ''}
+    `;
     
-    res.json(examinations.rows);
+    const examinations = await pool.query(examinationsQuery, params);
+    const stats = await pool.query(statsQuery, params);
+    
+    res.json({
+      examinations: examinations.rows,
+      stats: stats.rows[0]
+    });
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server Error');
@@ -63,7 +88,7 @@ router.get('/',authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => 
  * @desc    Create a new examination
  * @access  Private
  */
-router.post('/',authorizeRoles('admin', 'teacher', 'staff'), async (req, res) => {
+router.post('/',authorizeRoles('admin', 'teacher'), async (req, res) => {
   try {
     const { name, exam_type_id, academic_session_id, start_date, end_date, status } = req.body;
     
