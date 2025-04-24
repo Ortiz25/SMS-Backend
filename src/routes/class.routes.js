@@ -117,22 +117,13 @@ router.get(
 // Get classes by academic session
 router.get("/classes-academic-session", async (req, res) => {
   try {
-    const { academic_session_id } = req.query;
-
-    if (!academic_session_id) {
-      return res
-        .status(400)
-        .json({ message: "Academic session ID is required" });
-    }
-
     const query = `
       SELECT id, name, level, stream, curriculum_type, capacity
       FROM classes
-      WHERE academic_session_id = $1
       ORDER BY level, stream
     `;
 
-    const result = await pool.query(query, [academic_session_id]);
+    const result = await pool.query(query);
     res.json(result.rows);
   } catch (error) {
     console.error("Error fetching classes:", error);

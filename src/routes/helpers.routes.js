@@ -289,7 +289,7 @@ router.get(
 // GET reference data (classes, teachers, subjects) in a single request
 router.get(
   '/reference-data',
-  
+  authorizeRoles('admin', 'teacher', 'staff'),
   async (req, res) => {
     try {
       console.log("reached")

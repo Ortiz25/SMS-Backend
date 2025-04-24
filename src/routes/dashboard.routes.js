@@ -337,49 +337,45 @@ router.get(
       // Combined query to get all stats at once
       const statsQuery = `
       WITH teacher_load AS (
-        -- Calculate average teaching hours per week for teachers
-        SELECT 
+        -- Calculate average teaching hours per week for teachers without session filter
+        SELECT
           ROUND(AVG(
-            (SELECT COUNT(*) FROM timetable tt 
-             WHERE tt.teacher_id = t.id 
-             AND tt.academic_session_id = $1) * 
-            (SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time))/3600) 
-             FROM timetable tt2 
-             WHERE tt2.teacher_id = t.id
-             AND tt2.academic_session_id = $1)
+            (SELECT COUNT(*) FROM timetable tt
+             WHERE tt.teacher_id = t.id) *
+            (SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time))/3600)
+             FROM timetable tt2
+             WHERE tt2.teacher_id = t.id)
           ), 1) as avg_hours_per_week
         FROM teachers t
         WHERE t.status = 'active'
       ),
       classes_count AS (
-        -- Count active classes in current session
+        -- Count all active classes without session filter
         SELECT COUNT(*) as total_classes
         FROM classes
-        WHERE academic_session_id = $1
       ),
       subjects_count AS (
-        -- Count unique subjects being taught
+        -- Count unique subjects being taught without session filter
         SELECT COUNT(DISTINCT subject_id) as total_subjects
         FROM teacher_subjects
-        WHERE academic_session_id = $1
       ),
       utilization AS (
         -- Calculate teacher utilization percentage
         -- Assumes optimal load is around 30 hours per week
-        SELECT 
+        SELECT
           ROUND(
             (SELECT avg_hours_per_week FROM teacher_load) / 30.0 * 100
           ) as utilization_percentage
       )
-      
-      SELECT 
+     
+      SELECT
         (SELECT avg_hours_per_week FROM teacher_load) as avg_load,
         (SELECT total_classes FROM classes_count) as total_classes,
         (SELECT total_subjects FROM subjects_count) as total_subjects,
         (SELECT utilization_percentage FROM utilization) as utilization
     `;
 
-      const result = await pool.query(statsQuery, [currentSessionId]);
+      const result = await pool.query(statsQuery);
 
       if (result.rows.length === 0) {
         return res.status(404).json({
@@ -1543,67 +1539,87 @@ router.get(
   authorizeRoles("admin", "teacher"),
   async (req, res) => {
     try {
-      // Get query params with defaults
-      const { examId } = req.query;
+      // Get query params
+      const { examId, academicSessionId } = req.query;
 
-      // Get current academic session
-      const sessionResult = await pool.query(
-        "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
-      );
+      let currentSessionId;
 
-      if (sessionResult.rows.length === 0) {
-        return res
-          .status(404)
-          .json({ error: "No current academic session found" });
+      // If a specific academic session is requested, use that
+      if (academicSessionId) {
+        const sessionResult = await pool.query(
+          "SELECT id FROM academic_sessions WHERE id = $1 LIMIT 1",
+          [academicSessionId]
+        );
+
+        if (sessionResult.rows.length === 0) {
+          return res
+            .status(404)
+            .json({ error: "Requested academic session not found" });
+        }
+
+        currentSessionId = sessionResult.rows[0].id;
+      } else {
+        // Otherwise, get current academic session as default
+        const sessionResult = await pool.query(
+          "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
+        );
+
+        if (sessionResult.rows.length > 0) {
+          currentSessionId = sessionResult.rows[0].id;
+        }
+        // Note: If no current session is found, we'll continue without a session filter
       }
 
-      const currentSessionId = sessionResult.rows[0].id;
-
       // Get previous academic session (for trend comparison)
-      const previousSessionResult = await pool.query(
-        `SELECT id FROM academic_sessions 
-       WHERE term = (
-         SELECT term FROM academic_sessions WHERE id = $1
-       ) 
-       AND year::integer < (
-         SELECT year::integer FROM academic_sessions WHERE id = $1
-       )
-       ORDER BY year::integer DESC, term DESC
-       LIMIT 1`,
-        [currentSessionId]
-      );
+      // Only attempt to find previous session if we have a current session
+      let previousSessionId = null;
+      if (currentSessionId) {
+        // Get details of the current session
+        const currentSessionResult = await pool.query(
+          `SELECT year, term FROM academic_sessions WHERE id = $1`,
+          [currentSessionId]
+        );
+        
+        if (currentSessionResult.rows.length > 0) {
+          const currentYear = parseInt(currentSessionResult.rows[0].year);
+          const currentTerm = parseInt(currentSessionResult.rows[0].term);
+          
+          // Calculate previous term and year
+          let previousTerm = currentTerm - 1;
+          let previousYear = currentYear;
+          
+          // If we're at term 1, wrap around to term 3 of previous year
+          if (previousTerm < 1) {
+            previousTerm = 3;
+            previousYear = currentYear - 1;
+          }
+          
+          // Find the previous academic session
+          const previousSessionResult = await pool.query(
+            `SELECT id FROM academic_sessions 
+            WHERE year = $1 AND term = $2
+            LIMIT 1`,
+            [previousYear.toString(), previousTerm]
+          );
+          
+          previousSessionId =
+            previousSessionResult.rows.length > 0
+              ? previousSessionResult.rows[0].id
+              : null;
+        }
+      }
 
-      const previousSessionId =
-        previousSessionResult.rows.length > 0
-          ? previousSessionResult.rows[0].id
-          : null;
-
-      // Get all distinct class names/levels from the classes table
-      const classLevelsResult = await pool.query(
-        `SELECT DISTINCT level 
-       FROM classes 
-       WHERE academic_session_id = $1
-       AND level IS NOT NULL
-       ORDER BY level`,
-        [currentSessionId]
-      );
-
-      // Extract all class levels, or use default forms if none exist
-      const allClassLevels =
-        classLevelsResult.rows.length > 0
-          ? classLevelsResult.rows.map((row) => row.level)
-          : ["Form 1", "Form 2", "Form 3", "Form 4"];
-
-      // Get all examinations for the current session (if no specific exam is requested)
+      // Get examinations based on the provided parameters
       let examinations;
       
       if (examId) {
         // Get specific examination if examId is provided
         const examinationResult = await pool.query(
-          `SELECT id, name, exam_type_id, status
-           FROM examinations
-           WHERE id = $1 AND academic_session_id = $2`,
-          [examId, currentSessionId]
+          `SELECT e.id, e.name, e.exam_type_id, e.status, e.academic_session_id, et.curriculum_type
+           FROM examinations e
+           JOIN exam_types et ON e.exam_type_id = et.id
+           WHERE e.id = $1`,
+          [examId]
         );
         
         if (examinationResult.rows.length === 0) {
@@ -1612,14 +1628,13 @@ router.get(
         
         examinations = examinationResult.rows;
       } else {
-        // Get all completed and ongoing examinations for the current session
+        // Get ALL completed and ongoing examinations regardless of session
         const examinationsResult = await pool.query(
-          `SELECT id, name, exam_type_id, status
-           FROM examinations
-           WHERE academic_session_id = $1
-           AND status IN ('completed', 'ongoing')
-           ORDER BY id`,
-          [currentSessionId]
+          `SELECT e.id, e.name, e.exam_type_id, e.status, e.academic_session_id, et.curriculum_type
+           FROM examinations e
+           JOIN exam_types et ON e.exam_type_id = et.id
+           WHERE e.status IN ('completed', 'ongoing', 'scheduled')
+           ORDER BY e.academic_session_id DESC, e.id DESC`
         );
         
         examinations = examinationsResult.rows;
@@ -1627,15 +1642,44 @@ router.get(
 
       // Initialize the response object
       const response = {
-        currentSession: {
-          id: currentSessionId
-        },
+        currentSession: currentSessionId ? { id: currentSessionId } : null,
         previousSession: previousSessionId ? { id: previousSessionId } : null,
         examinations: [],
       };
 
       // Process each examination
       for (const exam of examinations) {
+        // First, fetch the actual class levels that have results for this specific exam
+        const examClassesResult = await pool.query(
+          `SELECT DISTINCT c.level
+           FROM student_result_summary srs
+           JOIN classes c ON srs.class_id = c.id
+           WHERE srs.examination_id = $1
+           AND c.level IS NOT NULL
+           ORDER BY c.level`,
+          [exam.id]
+        );
+        
+        let relevantClassLevels = [];
+        
+        if (examClassesResult.rows.length > 0) {
+          // If we have actual classes with results for this exam, use them
+          relevantClassLevels = examClassesResult.rows.map(row => row.level);
+        } else {
+          // Otherwise, fetch all classes for this curriculum type 
+          const curriculumClassesResult = await pool.query(
+            `SELECT DISTINCT level
+             FROM classes
+             WHERE curriculum_type = $1
+             ORDER BY level`,
+            [exam.curriculum_type]
+          );
+          
+          if (curriculumClassesResult.rows.length > 0) {
+            relevantClassLevels = curriculumClassesResult.rows.map(row => row.level);
+          }
+        }
+
         // Query to get current performance by class level for this examination
         const currentResults = await pool.query(
           `SELECT 
@@ -1653,7 +1697,7 @@ router.get(
         let previousResults = [];
         let previousExamId = null;
         
-        if (previousSessionId) {
+        if (previousSessionId && exam.exam_type_id) {
           // Try to find a matching examination from previous session (same exam_type_id)
           const previousExamResult = await pool.query(
             `SELECT id 
@@ -1693,7 +1737,7 @@ router.get(
         const overallAverage = overallAvgResult.rows[0]?.overall_average || 0;
 
         // Format the response for this examination
-        const formData = allClassLevels.map((classLevel) => {
+        const formData = relevantClassLevels.map((classLevel) => {
           // Find matching current data for this class level
           const current = currentResults.rows.find(
             (c) => c.class_level === classLevel
@@ -1744,6 +1788,8 @@ router.get(
           id: exam.id,
           name: exam.name,
           status: exam.status,
+          academicSessionId: exam.academic_session_id,
+          curriculumType: exam.curriculum_type,
           overallAverage,
           formData
         });

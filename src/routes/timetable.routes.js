@@ -37,11 +37,127 @@ const generateTeacherColor = (teacherId) => {
 };
 
 router.post(
-    "/add",
-    authorizeRoles("admin", "teacher"),
-    async (req, res) => {
-      try {
-        const {
+  "/add",
+  authorizeRoles("admin", "teacher"),
+  async (req, res) => {
+    try {
+      const {
+        class_id,
+        subject_id,
+        teacher_id,
+        day_of_week,
+        start_time,
+        end_time,
+        room_number
+      } = req.body;
+      console.log(req.body);
+
+      // Validate required fields
+      if (!class_id || !subject_id || !teacher_id || !day_of_week || !start_time || !end_time || !room_number) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing required fields"
+        });
+      }
+
+      // Get the current academic session
+      const academicSessionQuery = `
+        SELECT id FROM academic_sessions 
+        WHERE is_current = true 
+        LIMIT 1
+      `;
+      
+      const academicSessionResult = await pool.query(academicSessionQuery);
+      
+      // If no current academic session is found
+      if (academicSessionResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "No active academic session found"
+        });
+      }
+      
+      const academic_session_id = academicSessionResult.rows[0].id;
+
+      // Check for scheduling conflicts without checking academic session
+      const conflictQuery = `
+        SELECT
+          t.id,
+          CASE
+            WHEN t.teacher_id = $1 THEN 'teacher'
+            WHEN t.class_id = $2 THEN 'class'
+            WHEN t.room_number = $3 THEN 'room'
+          END AS conflict_type
+        FROM
+          timetable t
+        WHERE
+          t.day_of_week = $4
+          AND (
+            (t.teacher_id = $1) OR
+            (t.class_id = $2) OR
+            (t.room_number = $3)
+          )
+          AND (
+            (t.start_time, t.end_time) OVERLAPS ($5::time, $6::time)
+          )
+      `;
+
+      const conflictResult = await pool.query(
+        conflictQuery,
+        [
+          teacher_id,
+          class_id,
+          room_number,
+          day_of_week,
+          start_time,
+          end_time
+        ]
+      );
+      console.log(conflictResult.rows);
+
+      // If conflicts exist, return error with details
+      if (conflictResult.rows.length > 0) {
+        const conflictTypes = conflictResult.rows.map(row => row.conflict_type);
+       
+        let conflictMessage = "Scheduling conflict detected: ";
+        if (conflictTypes.includes('teacher')) {
+          conflictMessage += "Teacher is already scheduled at this time. ";
+        }
+        if (conflictTypes.includes('class')) {
+          conflictMessage += "Class already has another subject scheduled. ";
+        }
+        if (conflictTypes.includes('room')) {
+          conflictMessage += "Room is already booked at this time.";
+        }
+
+        return res.status(409).json({
+          success: false,
+          message: conflictMessage,
+          conflicts: conflictResult.rows
+        });
+      }
+
+      // Insert the new schedule entry
+      const insertQuery = `
+        INSERT INTO timetable (
+          class_id,
+          subject_id,
+          teacher_id,
+          day_of_week,
+          start_time,
+          end_time,
+          room_number,
+          academic_session_id,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+        RETURNING id
+      `;
+
+      const result = await pool.query(
+        insertQuery,
+        [
           class_id,
           subject_id,
           teacher_id,
@@ -50,128 +166,27 @@ router.post(
           end_time,
           room_number,
           academic_session_id
-        } = req.body;
+        ]
+      );
+      console.log(result);
 
-        console.log(req.body)
-  
-        // Validate required fields
-        if (!class_id || !subject_id || !teacher_id || !day_of_week || !start_time || !end_time || !room_number) {
-          return res.status(400).json({
-            success: false,
-            message: "Missing required fields"
-          });
+      return res.status(201).json({
+        success: true,
+        message: "Schedule added successfully",
+        data: {
+          id: result.rows[0].id
         }
-  
-        // Check for scheduling conflicts before insertion
-        const conflictQuery = `
-          SELECT 
-            t.id,
-            CASE
-              WHEN t.teacher_id = $1 THEN 'teacher'
-              WHEN t.class_id = $2 THEN 'class'
-              WHEN t.room_number = $3 THEN 'room'
-            END AS conflict_type
-          FROM 
-            timetable t
-          WHERE 
-            t.day_of_week = $4
-            AND t.academic_session_id = $5
-            AND (
-              (t.teacher_id = $1) OR 
-              (t.class_id = $2) OR 
-              (t.room_number = $3)
-            )
-            AND (
-              (t.start_time, t.end_time) OVERLAPS ($6::time, $7::time)
-            )
-        `;
-  
-        const conflictResult = await pool.query(
-          conflictQuery,
-          [
-            teacher_id,
-            class_id,
-            room_number,
-            day_of_week,
-            academic_session_id || 1, // Default to 1 if not provided
-            start_time,
-            end_time
-          ]
-        );
-        console.log(conflictResult.rows)
-  
-        // If conflicts exist, return error with details
-        if (conflictResult.rows.length > 0) {
-          const conflictTypes = conflictResult.rows.map(row => row.conflict_type);
-          
-          let conflictMessage = "Scheduling conflict detected: ";
-          if (conflictTypes.includes('teacher')) {
-            conflictMessage += "Teacher is already scheduled at this time. ";
-          }
-          if (conflictTypes.includes('class')) {
-            conflictMessage += "Class already has another subject scheduled. ";
-          }
-          if (conflictTypes.includes('room')) {
-            conflictMessage += "Room is already booked at this time.";
-          }
-  
-          return res.status(409).json({
-            success: false,
-            message: conflictMessage,
-            conflicts: conflictResult.rows
-          });
-        }
-  
-        // Insert the new schedule entry
-        const insertQuery = `
-          INSERT INTO timetable (
-            class_id, 
-            subject_id, 
-            teacher_id, 
-            day_of_week, 
-            start_time, 
-            end_time, 
-            room_number, 
-            academic_session_id,
-            created_at,
-            updated_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-          RETURNING id
-        `;
-  
-        const result = await pool.query(
-          insertQuery,
-          [
-            class_id,
-            subject_id,
-            teacher_id,
-            day_of_week,
-            start_time,
-            end_time,
-            room_number,
-            academic_session_id || 1 // Default to 1 if not provided
-          ]
-        );
-        console.log(result)
-  
-        return res.status(201).json({
-          success: true,
-          message: "Schedule added successfully",
-          data: {
-            id: result.rows[0].id
-          }
-        });
-      } catch (error) {
-        console.error("Error adding schedule:", error);
-        return res.status(500).json({
-          success: false,
-          message: "An error occurred while adding the schedule",
-          error: error.message
-        });
-      }
+      });
+    } catch (error) {
+      console.error("Error adding schedule:", error);
+      return res.status(500).json({
+        success: false,
+        message: "An error occurred while adding the schedule",
+        error: error.message
+      });
     }
-  );
+  }
+);
 
   router.put(
     "/:id",
@@ -909,13 +924,7 @@ router.get(
         
         // Build the main query using the comprehensive SQL from code.txt
         const query = `
-          WITH current_session AS (
-              SELECT id 
-              FROM academic_sessions 
-              WHERE ${academicSessionId ? `id = $1` : 'is_current = true'} 
-              LIMIT 1
-          ),
-          day_names(number, name) AS (
+          WITH day_names(number, name) AS (
               VALUES 
                   (1, 'Monday'),
                   (2, 'Tuesday'),
@@ -938,11 +947,10 @@ router.get(
                   t.day_of_week,
                   dn.name AS day_name,
                   to_char(t.start_time, 'HH24:MI') AS start_time,
-                  to_char(t.end_time, 'HH24:MI') AS end_time
+                  to_char(t.end_time, 'HH24:MI') AS end_time,
+                  t.academic_session_id
               FROM 
                   timetable t
-              JOIN 
-                  current_session cs ON t.academic_session_id = cs.id
               JOIN 
                   teachers teacher ON t.teacher_id = teacher.id
               JOIN 
@@ -952,6 +960,7 @@ router.get(
               JOIN 
                   day_names dn ON t.day_of_week = dn.number
               WHERE 1=1
+                  ${academicSessionId ? 'AND t.academic_session_id = $1' : ''}
                   ${classFilter}
                   ${teacherFilter}
                   ${roomFilter}
@@ -962,6 +971,7 @@ router.get(
                   teacher_name,
                   day_of_week,
                   day_name,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'timetable_id', timetable_id,
@@ -975,7 +985,7 @@ router.get(
                       ) ORDER BY start_time
                   ) AS classes
               FROM weekly_schedule
-              GROUP BY teacher_id, teacher_name, day_of_week, day_name
+              GROUP BY teacher_id, teacher_name, day_of_week, day_name, academic_session_id
           ),
           class_schedule AS (
               SELECT 
@@ -983,6 +993,7 @@ router.get(
                   class_name,
                   day_of_week,
                   day_name,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'timetable_id', timetable_id,
@@ -996,13 +1007,14 @@ router.get(
                       ) ORDER BY start_time
                   ) AS classes
               FROM weekly_schedule
-              GROUP BY class_id, class_name, day_of_week, day_name
+              GROUP BY class_id, class_name, day_of_week, day_name, academic_session_id
           ),
           room_schedule AS (
               SELECT 
                   room_number,
                   day_of_week,
                   day_name,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'timetable_id', timetable_id,
@@ -1017,12 +1029,13 @@ router.get(
                       ) ORDER BY start_time
                   ) AS classes
               FROM weekly_schedule
-              GROUP BY room_number, day_of_week, day_name
+              GROUP BY room_number, day_of_week, day_name, academic_session_id
           ),
           teacher_schedule_final AS (
               SELECT 
                   teacher_id, 
                   teacher_name,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'day', day_name,
@@ -1031,12 +1044,13 @@ router.get(
                       ) ORDER BY day_of_week
                   ) AS weekly_schedule
               FROM teacher_schedule
-              GROUP BY teacher_id, teacher_name
+              GROUP BY teacher_id, teacher_name, academic_session_id
           ),
           class_schedule_final AS (
               SELECT 
                   class_id, 
                   class_name,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'day', day_name,
@@ -1045,11 +1059,12 @@ router.get(
                       ) ORDER BY day_of_week
                   ) AS weekly_schedule
               FROM class_schedule
-              GROUP BY class_id, class_name
+              GROUP BY class_id, class_name, academic_session_id
           ),
           room_schedule_final AS (
               SELECT 
                   room_number,
+                  academic_session_id,
                   json_agg(
                       json_build_object(
                           'day', day_name,
@@ -1058,17 +1073,34 @@ router.get(
                       ) ORDER BY day_of_week
                   ) AS weekly_schedule
               FROM room_schedule
-              GROUP BY room_number
+              GROUP BY room_number, academic_session_id
+          ),
+          sessions AS (
+              SELECT DISTINCT 
+                  academic_session_id AS id,
+                  (SELECT CONCAT(year, ' Term ', term) FROM academic_sessions WHERE id = academic_session_id) AS name
+              FROM 
+                  weekly_schedule
           )
-  
+
           -- Main query to get structured weekly schedule
           SELECT 
               json_build_object(
+                  'sessions', (
+                      SELECT json_agg(
+                          json_build_object(
+                              'id', id,
+                              'name', name
+                          )
+                      )
+                      FROM sessions
+                  ),
                   'teachers', (
                       SELECT json_agg(
                           json_build_object(
                               'id', teacher_id,
                               'name', teacher_name,
+                              'academic_session_id', academic_session_id,
                               'weekly_schedule', weekly_schedule
                           )
                       )
@@ -1079,6 +1111,7 @@ router.get(
                           json_build_object(
                               'id', class_id,
                               'name', class_name,
+                              'academic_session_id', academic_session_id,
                               'weekly_schedule', weekly_schedule
                           )
                       )
@@ -1088,6 +1121,7 @@ router.get(
                       SELECT json_agg(
                           json_build_object(
                               'name', room_number,
+                              'academic_session_id', academic_session_id,
                               'weekly_schedule', weekly_schedule
                           )
                       )

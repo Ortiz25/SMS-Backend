@@ -81,100 +81,94 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
        
         // Main query to get teacher data with schedule and load information
         const query = `
-            WITH daily_classes AS (
-                SELECT
-                    tt.teacher_id,
-                    CASE tt.day_of_week
-                        WHEN 1 THEN 'Monday'
-                        WHEN 2 THEN 'Tuesday'
-                        WHEN 3 THEN 'Wednesday'
-                        WHEN 4 THEN 'Thursday'
-                        WHEN 5 THEN 'Friday'
-                        WHEN 6 THEN 'Saturday'
-                        WHEN 7 THEN 'Sunday'
-                    END AS day_name,
-                    json_agg(
-                        json_build_object(
-                            'class', c.name,
-                            'subject', s.name,
-                            'start_time', to_char(tt.start_time, 'HH:MI AM'),
-                            'end_time', to_char(tt.end_time, 'HH:MI AM'),
-                            'room', COALESCE(tt.room_number, 'N/A')
-                        )
-                    ) AS classes
-                FROM
-                    timetable tt
-                JOIN
-                    classes c ON tt.class_id = c.id
-                JOIN
-                    subjects s ON tt.subject_id = s.id
-                WHERE
-                    tt.academic_session_id = $1
-                GROUP BY
-                    tt.teacher_id, day_name
-            ),
-            teacher_hour_load AS (
-                SELECT
-                    teacher_id,
-                    SUM(EXTRACT(EPOCH FROM (end_time - start_time))/3600) AS hours_per_week,
-                    COUNT(*) AS class_sessions
-                FROM
-                    timetable tt
-                WHERE
-                    tt.academic_session_id = $1
-                GROUP BY
-                    teacher_id
-            ),
-            subject_assignments AS (
-                SELECT
-                    teacher_id,
-                    COUNT(*) AS assigned_subjects
-                FROM
-                    teacher_subjects ts
-                WHERE
-                    ts.academic_session_id = $1
-                GROUP BY
-                    teacher_id
-            )
+        WITH daily_classes AS (
             SELECT
-                t.id,
-                (t.first_name || ' ' || t.last_name) AS name,
-                t.photo_url AS photo,
-                t.email,
-                t.phone_primary AS phone,
-                t.department,
-                t.employment_type AS "employmentStatus",
-                t.subject_specialization AS subjects,
-                t.subject_specialization AS qualifications,
-                t.joining_date AS "joinDate",
-                COALESCE(thl.hours_per_week, 0) AS "currentLoad",
-                COALESCE(thl.class_sessions, 0) AS "classSessions",
-                COALESCE(sa.assigned_subjects, 0) AS "subjectAssignments",
-                40 AS "maxLoad",
-                (
-                    SELECT json_agg(
-                        json_build_object(
-                            'day', day_name,
-                            'classes', classes
-                        )
+                tt.teacher_id,
+                CASE tt.day_of_week
+                    WHEN 1 THEN 'Monday'
+                    WHEN 2 THEN 'Tuesday'
+                    WHEN 3 THEN 'Wednesday'
+                    WHEN 4 THEN 'Thursday'
+                    WHEN 5 THEN 'Friday'
+                    WHEN 6 THEN 'Saturday'
+                    WHEN 7 THEN 'Sunday'
+                END AS day_name,
+                json_agg(
+                    json_build_object(
+                        'class', c.name,
+                        'subject', s.name,
+                        'start_time', to_char(tt.start_time, 'HH:MI AM'),
+                        'end_time', to_char(tt.end_time, 'HH:MI AM'),
+                        'room', COALESCE(tt.room_number, 'N/A')
                     )
-                    FROM daily_classes dc
-                    WHERE dc.teacher_id = t.id
-                ) AS schedule
+                ) AS classes
             FROM
-                teachers t
-            LEFT JOIN
-                teacher_hour_load thl ON t.id = thl.teacher_id
-            LEFT JOIN
-                subject_assignments sa ON t.id = sa.teacher_id
-            WHERE
-                t.status = 'active'
-            ORDER BY
-                t.id
-        `;
+                timetable tt
+            JOIN
+                classes c ON tt.class_id = c.id
+            JOIN
+                subjects s ON tt.subject_id = s.id
+            GROUP BY
+                tt.teacher_id, day_name
+        ),
+        teacher_hour_load AS (
+            SELECT
+                teacher_id,
+                SUM(EXTRACT(EPOCH FROM (end_time - start_time))/3600) AS hours_per_week,
+                COUNT(*) AS class_sessions
+            FROM
+                timetable tt
+            GROUP BY
+                teacher_id
+        ),
+        subject_assignments AS (
+            SELECT
+                teacher_id,
+                COUNT(*) AS assigned_subjects
+            FROM
+                teacher_subjects ts
+            GROUP BY
+                teacher_id
+        )
+        SELECT
+            t.id,
+            (t.first_name || ' ' || t.last_name) AS name,
+            t.photo_url AS photo,
+            t.email,
+            t.phone_primary AS phone,
+            t.department,
+            t.employment_type AS "employmentStatus",
+            t.subject_specialization AS subjects,
+            t.subject_specialization AS qualifications,
+            t.joining_date AS "joinDate",
+            COALESCE(thl.hours_per_week, 0) AS "currentLoad",
+            COALESCE(thl.class_sessions, 0) AS "classSessions",
+            COALESCE(sa.assigned_subjects, 0) AS "subjectAssignments",
+            40 AS "maxLoad",
+            (
+                SELECT json_agg(
+                    json_build_object(
+                        'day', day_name,
+                        'classes', classes
+                    )
+                )
+                FROM daily_classes dc
+                WHERE dc.teacher_id = t.id
+            ) AS schedule
+        FROM
+            teachers t
+        LEFT JOIN
+            teacher_hour_load thl ON t.id = thl.teacher_id
+        LEFT JOIN
+            subject_assignments sa ON t.id = sa.teacher_id
+        WHERE
+            t.status = 'active'
+        ORDER BY
+            t.id
+    `;
        
         // Execute the query with the current session ID
-        const result = await pool.query(query, [currentSessionId]);
+        const result = await pool.query(query);
        
         // Return the results
         res.json({
