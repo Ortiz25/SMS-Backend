@@ -28,10 +28,10 @@ router.get(
 
       const params = [];
 
-      if (academic_session_id) {
-        query += ` WHERE c.academic_session_id = $1`;
-        params.push(academic_session_id);
-      }
+      // if (academic_session_id) {
+      //   query += ` WHERE c.academic_session_id = $1`;
+      //   params.push(academic_session_id);
+      // }
 
       query += ` ORDER BY c.level, c.stream`;
 
