@@ -33,6 +33,7 @@ import usersRoutes from "./src/routes/users.routes.js"
 import inventoryRoutes from "./src/routes/inventory.routes.js"
 import financeRoutes from "./src/routes/finance.routes.js"
 import yearlyRoutes from "./src/routes/yearlyAttendance.js"
+import subjectSettings from "./src/routes/subjectSettings.js"
 import academicSettingsRoutes from "./src/routes/academicSettings.routes.js"
 import examinationSettingsRoutes from "./src/routes/examinationsSettings.routes.js"
 import schoolStructuresRoutes from "./src/routes/schoolStructure.routes.js"
@@ -92,6 +93,7 @@ app.use('/api/password', passwordMgt);
 app.use('/api/academic-settings', academicSettingsRoutes);
 app.use('/api/examinations', examinationSettingsRoutes);
 app.use('/api/school-structure', schoolStructuresRoutes);
+app.use('/api/subjects-settings', subjectSettings);
 
 
 
