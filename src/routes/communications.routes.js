@@ -365,9 +365,41 @@ router.post('/emails',
   }
 );
 
+router.get('/sms',authorizeRoles('admin', 'teacher'), async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        cl.id,
+        u.username as sender_name,
+        cl.recipient_phone,
+        cl.message,
+        cl.created_at,
+        cl.status,
+        cl.delivery_time,
+        cl.cost
+      FROM 
+        communication_logs cl
+      JOIN 
+        users u ON cl.sender_id = u.id
+      WHERE 
+        cl.communication_type = 'sms'
+      ORDER BY 
+        cl.created_at DESC
+      LIMIT 50
+    `;
+    
+    const result = await pool.query(query);
+    
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching SMS messages:', error);
+    res.status(500).json({ message: 'Server error while fetching SMS messages' });
+  }
+});
+
 // Send SMS
 router.post('/sms',
-  authorizeRoles('admin', 'teacher', 'staff'),
+  authorizeRoles('admin', 'teacher'),
   [
     body('message').notEmpty().withMessage('Message is required'),
     body('recipientType').isIn(['individual', 'all', 'class', 'department']).withMessage('Valid recipient type is required'),
