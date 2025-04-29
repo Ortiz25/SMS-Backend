@@ -137,6 +137,8 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
             t.email,
             t.phone_primary AS phone,
             t.department,
+            t.tsc_number,
+            t.education,
             t.employment_type AS "employmentStatus",
             t.subject_specialization AS subjects,
             t.subject_specialization AS qualifications,
@@ -493,7 +495,7 @@ router.post('/',
 
 
 // Get available substitute teachers for a date range
-router.get('/check/available-substitutes', authorizeRoles("admin", "librarian", "teacher", "student"),  async (req, res) => {
+router.get('/check/available-substitutes', authorizeRoles("admin", "teacher"),  async (req, res) => {
     try {
       const { start_date, end_date, exclude_teacher_id } = req.query;
       console.log(req.query)
@@ -544,6 +546,7 @@ router.get('/check/available-substitutes', authorizeRoles("admin", "librarian", 
 
 // Update existing teacher
 router.put('/:id', 
+    authorizeRoles("admin", "teacher"),
     upload.array('documents', 5),
     async (req, res, next) => {
         const client = await pool.connect();

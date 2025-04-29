@@ -46,21 +46,6 @@ router.get(
     try {
       const { academicSessionId, curriculum_type, level } = req.query;
       console.log(req.body);
-      // Get current academic session if not specified
-      let currentSessionId = academicSessionId;
-      if (!currentSessionId) {
-        const sessionResult = await pool.query(
-          "SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1"
-        );
-        if (sessionResult.rows.length > 0) {
-          currentSessionId = sessionResult.rows[0].id;
-        } else {
-          return res.status(404).json({
-            success: false,
-            error: "No active academic session found",
-          });
-        }
-      }
 
       // Build query with filters
       let query = `
@@ -71,6 +56,10 @@ router.get(
           c.level,
           c.stream,
           c.capacity,
+          c.academic_session_id,
+          a.year,
+          a.term,
+          a.is_current,
           CONCAT(t.first_name, ' ', t.last_name) as class_teacher,
           (
             SELECT COUNT(*)
@@ -79,33 +68,72 @@ router.get(
           ) as student_count
         FROM classes c
         LEFT JOIN teachers t ON c.class_teacher_id = t.id
-        WHERE c.academic_session_id = $1
+        LEFT JOIN academic_sessions a ON c.academic_session_id = a.id
+        WHERE 1=1
       `;
-
-      const queryParams = [currentSessionId];
-      let paramIndex = 2;
-
+      
+      const queryParams = [];
+      let paramIndex = 1;
+      
+      // Add session filter if provided
+      if (academicSessionId) {
+        query += ` AND c.academic_session_id = $${paramIndex}`;
+        queryParams.push(academicSessionId);
+        paramIndex++;
+      }
+      
       // Add additional filters if provided
       if (curriculum_type) {
         query += ` AND c.curriculum_type = $${paramIndex}`;
         queryParams.push(curriculum_type);
         paramIndex++;
       }
-
+      
       if (level) {
         query += ` AND c.level = $${paramIndex}`;
         queryParams.push(level);
         paramIndex++;
       }
-
-      query += " ORDER BY c.level, c.stream";
-
+      
+      // Order by session (most recent first), then level and stream
+      query += " ORDER BY a.year DESC, a.term DESC, c.level, c.stream";
+      
       const result = await pool.query(query, queryParams);
-
+      
+      // Group classes by academic session
+      const sessionMap = {};
+      result.rows.forEach(classObj => {
+        const sessionId = classObj.academic_session_id;
+        if (!sessionMap[sessionId]) {
+          sessionMap[sessionId] = {
+            id: sessionId,
+            year: classObj.year,
+            term: classObj.term,
+            is_current: classObj.is_current,
+            classes: []
+          };
+        }
+        
+        // Remove session fields from class object to avoid duplication
+        const { year, term, is_current, ...classData } = classObj;
+        sessionMap[sessionId].classes.push(classData);
+      });
+      
+      // Convert map to array
+      const sessionData = Object.values(sessionMap);
+      
       res.json({
         success: true,
         count: result.rows.length,
-        data: result.rows,
+        sessions: sessionData,
+        // Also include flat data for backward compatibility
+        data: result.rows.map(row => {
+          const { year, term, is_current, ...classData } = row;
+          return {
+            ...classData,
+            session_info: { year, term, is_current }
+          };
+        })
       });
     } catch (error) {
       console.error("Error fetching classes:", error);

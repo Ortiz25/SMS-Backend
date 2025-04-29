@@ -137,7 +137,7 @@ router.get(
   authorizeRoles("admin", "teacher", "staff"),
   async (req, res, next) => {
     try {
-      // Base query
+      // Base query - modified to use a subquery approach instead of template literals
       const query = `
         SELECT
             s.id,
@@ -217,9 +217,14 @@ router.get(
                     LEFT JOIN teachers t ON ss.teacher_id = t.id
                     WHERE ss.student_id = s.id 
                     AND ss.status = 'active'
-                    -- Get current academic session subjects
+                    -- Get the latest academic session for each student
                     AND ss.academic_session_id = (
-                        SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1
+                        SELECT ss2.academic_session_id
+                        FROM student_subjects ss2
+                        JOIN academic_sessions ac ON ss2.academic_session_id = ac.id
+                        WHERE ss2.student_id = s.id
+                        ORDER BY ac.year DESC, ac.term DESC
+                        LIMIT 1
                     )
                 ),
                 '[]'::json
@@ -376,10 +381,36 @@ router.get(
 );
 
 
-// src/routes/student.routes.js - Add or update this route
+
 
 // Update student route handler with fixed schema references
-router.put('/:id', authenticateToken, async (req, res) => {
+// Add this helper function at the top of your file
+function mapClassToLevel(className, curriculumType) {
+  // For CBC curriculum
+  if (curriculumType === 'CBC') {
+    // Map specific grades to their corresponding levels
+    if (/^Grade [1-3]\b/.test(className)) {
+      return 'Lower Primary';
+    } else if (/^Grade [4-6]\b/.test(className)) {
+      return 'Upper Primary';
+    } else if (/^Grade [7-9]\b/.test(className)) {
+      return 'Junior Secondary';
+    } else if (/^Grade 1[0-2]\b/.test(className)) {
+      return 'Senior Secondary';
+    }
+  } 
+  // For 844 curriculum
+  else if (curriculumType === '844') {
+    if (/^Form [1-4]\b/.test(className)) {
+      return 'Secondary';
+    }
+  }
+  
+  // Default return the original class if no mapping found
+  return className;
+}
+
+router.put('/:id', authorizeRoles("admin"), async (req, res) => {
   const client = await pool.connect();
   
   try {
@@ -605,26 +636,75 @@ router.put('/:id', authenticateToken, async (req, res) => {
       
       console.log('Processed unique subject IDs:', uniqueSubjectIds);
       
-      // Get current academic session
+      // Get latest academic session for subject management
       const sessionResult = await client.query(
-        'SELECT id FROM academic_sessions WHERE is_current = true LIMIT 1'
+        'SELECT id FROM academic_sessions ORDER BY year DESC, term DESC LIMIT 1'
       );
       
       if (sessionResult.rows.length > 0) {
         const academicSessionId = sessionResult.rows[0].id;
+        console.log('Using latest academic session ID:', academicSessionId);
         
-        // Get student's current class
+        // Get student's current class in this session
         const classResult = await client.query(
-          'SELECT id FROM classes WHERE level = $1 AND stream = $2 AND academic_session_id = $3 LIMIT 1',
+          `SELECT id FROM classes 
+           WHERE level = $1 AND stream = $2 AND academic_session_id = $3 
+           LIMIT 1`,
           [updatedStudent.current_class, updatedStudent.stream, academicSessionId]
         );
         
+        // If class doesn't exist in this session, try to find or create it
+        let classId;
         if (classResult.rows.length > 0) {
-          const classId = classResult.rows[0].id;
+          classId = classResult.rows[0].id;
+        } else {
+          console.log('Class not found in current session, checking for class definition');
           
+          // Try to find a class definition from any session to use as a template
+          const classTemplateResult = await client.query(
+            `SELECT * FROM classes 
+             WHERE level = $1 AND stream = $2
+             LIMIT 1`,
+            [updatedStudent.current_class, updatedStudent.stream]
+          );
+          
+          if (classTemplateResult.rows.length > 0) {
+            const classTemplate = classTemplateResult.rows[0];
+            console.log('Found class template, creating class for current session');
+            
+            // Create the class for the current session
+            const createClassResult = await client.query(
+              `INSERT INTO classes 
+               (name, curriculum_type, level, stream, class_teacher_id, academic_session_id, capacity)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id`,
+              [
+                classTemplate.name,
+                updatedStudent.curriculum_type, // Use student's curriculum type
+                updatedStudent.current_class,
+                updatedStudent.stream,
+                classTemplate.class_teacher_id,
+                academicSessionId,
+                classTemplate.capacity || 40 // Default capacity if not specified
+              ]
+            );
+            
+            if (createClassResult.rows.length > 0) {
+              classId = createClassResult.rows[0].id;
+              console.log('Created new class with ID:', classId);
+            } else {
+              console.error('Failed to create class for current session');
+            }
+          } else {
+            console.warn('No class template found, cannot create class');
+          }
+        }
+        
+        if (classId) {
           // Get currently enrolled subjects
           const currentSubjectsResult = await client.query(
-            'SELECT subject_id FROM student_subjects WHERE student_id = $1 AND academic_session_id = $2 AND status = $3',
+            `SELECT subject_id FROM student_subjects 
+             WHERE student_id = $1 AND academic_session_id = $2 AND status = $3`,
             [id, academicSessionId, 'active']
           );
           
@@ -642,7 +722,9 @@ router.put('/:id', authenticateToken, async (req, res) => {
           if (subjectsToRemove.length > 0) {
             try {
               const dropResult = await client.query(
-                'UPDATE student_subjects SET status = $1, updated_at = NOW() WHERE student_id = $2 AND subject_id = ANY($3) AND academic_session_id = $4',
+                `UPDATE student_subjects 
+                 SET status = $1, updated_at = NOW() 
+                 WHERE student_id = $2 AND subject_id = ANY($3) AND academic_session_id = $4`,
                 ['dropped', id, subjectsToRemove, academicSessionId]
               );
               console.log(`Marked ${dropResult.rowCount} subjects as dropped`);
@@ -657,16 +739,99 @@ router.put('/:id', authenticateToken, async (req, res) => {
             let successCount = 0;
             let errorCount = 0;
             
+            // Map the student's class to the appropriate curriculum level
+            const mappedLevel = mapClassToLevel(updatedStudent.current_class, updatedStudent.curriculum_type);
+            console.log(`Mapped ${updatedStudent.current_class} to ${mappedLevel} for ${updatedStudent.curriculum_type}`);
+            
+            // First try: Check for subjects valid for this student's mapped level
+            const validSubjectsQuery = `
+              SELECT id, name FROM subjects 
+              WHERE id = ANY($1) 
+                AND curriculum_type = $2 
+                AND level = $3
+            `;
+            
+            const validSubjectsResult = await client.query(
+              validSubjectsQuery,
+              [subjectsToAdd, updatedStudent.curriculum_type, mappedLevel]
+            );
+            
+            let validSubjectIds = validSubjectsResult.rows.map(row => row.id);
+            console.log(`Found ${validSubjectIds.length} valid subjects for ${mappedLevel}`);
+            
+            // If no subjects are found with this level, try subjects marked as 'all'
+            if (validSubjectIds.length === 0) {
+              console.log('No subjects found with mapped level, checking for universal subjects');
+              
+              const universalSubjectsQuery = `
+                SELECT id, name FROM subjects 
+                WHERE id = ANY($1) 
+                  AND curriculum_type = $2 
+                  AND level = 'all'
+              `;
+              
+              const universalSubjectsResult = await client.query(
+                universalSubjectsQuery,
+                [subjectsToAdd, updatedStudent.curriculum_type]
+              );
+              
+              validSubjectIds = universalSubjectsResult.rows.map(row => row.id);
+              console.log(`Found ${validSubjectIds.length} universal subjects`);
+            }
+            
+            // If still no subjects, just use any subjects with matching curriculum
+            if (validSubjectIds.length === 0) {
+              console.log('No specific or universal subjects found, using any with matching curriculum');
+              
+              const anySubjectsQuery = `
+                SELECT id, name, level FROM subjects 
+                WHERE id = ANY($1) 
+                  AND curriculum_type = $2
+              `;
+              
+              const anySubjectsResult = await client.query(
+                anySubjectsQuery,
+                [subjectsToAdd, updatedStudent.curriculum_type]
+              );
+              
+              validSubjectIds = anySubjectsResult.rows.map(row => row.id);
+              console.log(`Found ${validSubjectIds.length} subjects with matching curriculum`);
+              
+              if (anySubjectsResult.rows.length > 0) {
+                console.log('Subject levels found:', anySubjectsResult.rows.map(row => row.level).filter((v, i, a) => a.indexOf(v) === i));
+              }
+            }
+            
+            // Last resort: just use the IDs directly
+            if (validSubjectIds.length === 0) {
+              console.log('No matching subjects found at all, using subject IDs directly');
+              validSubjectIds = subjectsToAdd;
+            }
+            
+            // Find teacher assignments for these subjects in this class
+            const teacherAssignmentsResult = await client.query(
+              `SELECT subject_id, teacher_id 
+               FROM teacher_subjects 
+               WHERE class_id = $1 AND academic_session_id = $2 AND subject_id = ANY($3)`,
+              [classId, academicSessionId, validSubjectIds]
+            );
+            
+            // Create a map of subject_id to teacher_id
+            const subjectTeacherMap = {};
+            teacherAssignmentsResult.rows.forEach(row => {
+              subjectTeacherMap[row.subject_id] = row.teacher_id;
+            });
+            
             // Process each subject individually for better error handling
-            for (const subjectId of subjectsToAdd) {
+            for (const subjectId of validSubjectIds) {
               try {
                 await client.query(
                   `INSERT INTO student_subjects 
-                  (student_id, subject_id, class_id, academic_session_id, enrollment_date, is_elective, status)
-                  VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'active')
+                  (student_id, subject_id, class_id, academic_session_id, teacher_id, enrollment_date, is_elective, status)
+                  VALUES ($1, $2, $3, $4, $5, CURRENT_DATE, false, 'active')
                   ON CONFLICT (student_id, subject_id, academic_session_id) 
-                  DO UPDATE SET status = 'active', updated_at = NOW()`,
-                  [id, subjectId, classId, academicSessionId]
+                  DO UPDATE SET status = 'active', teacher_id = $5, updated_at = NOW()`,
+                  [id, subjectId, classId, academicSessionId, subjectTeacherMap[subjectId] || null]
                 );
                 successCount++;
               } catch (error) {
@@ -678,10 +843,10 @@ router.put('/:id', authenticateToken, async (req, res) => {
             console.log(`Subject enrollment summary: ${successCount} added successfully, ${errorCount} failed`);
           }
         } else {
-          console.warn(`No class found for level=${updatedStudent.current_class}, stream=${updatedStudent.stream}`);
+          console.warn(`No class found or created for level=${updatedStudent.current_class}, stream=${updatedStudent.stream}`);
         }
       } else {
-        console.warn('No current academic session found');
+        console.warn('No academic sessions found');
       }
     } else {
       console.log('Skipping subjects update due to missing data:', {
@@ -714,7 +879,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
     
     const completeStudentResult = await pool.query(completeStudentQuery, [id]);
     
-    // Get the student's subjects with teacher information
+    // Get the student's subjects with teacher information - use latest session
     const subjectsQuery = `
       SELECT 
         ss.subject_id AS id,
@@ -730,8 +895,12 @@ router.put('/:id', authenticateToken, async (req, res) => {
       LEFT JOIN teachers t ON ss.teacher_id = t.id
       WHERE 
         ss.student_id = $1 
-        AND a.is_current = true
         AND ss.status = 'active'
+        AND ss.academic_session_id = (
+          SELECT id FROM academic_sessions 
+          ORDER BY year DESC, term DESC 
+          LIMIT 1
+        )
     `;
     
     const subjectsResult = await pool.query(subjectsQuery, [id]);
@@ -760,7 +929,6 @@ router.put('/:id', authenticateToken, async (req, res) => {
     client.release();
   }
 });
-
 
 const isValidStudentColumn = (key) => {
   // List of valid columns in the students table
@@ -1713,31 +1881,51 @@ router.post('/:studentId/subjects', authorizeRoles("admin"), async (req, res) =>
 
 router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) => {
   const client = await pool.connect();
-
   try {
     await client.query("BEGIN");
-
     const { enrollments } = req.body;
-
-    console.log(enrollments)
-
+    console.log("Enrollment data received:", enrollments);
+    
     if (!Array.isArray(enrollments) || enrollments.length === 0) {
       return res.status(400).json({
         success: false,
         error: "Enrollment data must be a non-empty array"
       });
     }
-
+    
+    // Get the latest academic session if needed for any enrollment
+    let latestSessionId = null;
+    const needsSessionId = enrollments.some(enrollment => !enrollment.academicSessionId);
+    
+    if (needsSessionId) {
+      const sessionResult = await client.query(
+        'SELECT id FROM academic_sessions ORDER BY year DESC, term DESC LIMIT 1'
+      );
+      
+      if (sessionResult.rows.length > 0) {
+        latestSessionId = sessionResult.rows[0].id;
+        console.log('Using latest academic session ID for missing session IDs:', latestSessionId);
+      } else {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          error: "No academic sessions found in the system"
+        });
+      }
+    }
+    
     // Prepare the values for multiple inserts
     const subjectValues = [];
     const subjectParams = [];
     let paramIndex = 1;
-    
+   
     for (const enrollment of enrollments) {
-      const { studentId, subjectId, classId, academicSessionId, isElective = false, status = 'active' } = enrollment;
+      // Use provided academicSessionId or default to latest
+      const academicSessionId = enrollment.academicSessionId || latestSessionId;
+      const { studentId, subjectId, classId, isElective = false, status = 'active' } = enrollment;
       
       // Validate required fields
-      if (!studentId || !subjectId || !classId || !academicSessionId) {
+      if (!studentId || !subjectId || !classId) {
         await client.query("ROLLBACK");
         return res.status(400).json({
           success: false,
@@ -1756,26 +1944,31 @@ router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) 
       );
       paramIndex += 6;
     }
-    
+   
     // Execute the batch insert
     const subjectEnrollmentQuery = `
       INSERT INTO student_subjects (
-        student_id, subject_id, class_id, academic_session_id, 
+        student_id, subject_id, class_id, academic_session_id,
         is_elective, enrollment_date, status
       ) VALUES ${subjectValues.join(', ')}
-      ON CONFLICT (student_id, subject_id, academic_session_id) 
-      DO UPDATE SET 
+      ON CONFLICT (student_id, subject_id, academic_session_id)
+      DO UPDATE SET
         class_id = EXCLUDED.class_id,
         is_elective = EXCLUDED.is_elective,
         status = EXCLUDED.status,
         updated_at = CURRENT_TIMESTAMP
       RETURNING id
     `;
-    
+   
     const enrollmentResult = await client.query(subjectEnrollmentQuery, subjectParams);
-      console.log(enrollmentResult)
+    console.log(`Created/updated ${enrollmentResult.rowCount} subject enrollments`);
+    
     // Optionally assign teachers based on existing teacher_subjects mappings
-    for (const enrollment of enrollments) {
+    for (let i = 0; i < enrollments.length; i++) {
+      const enrollment = enrollments[i];
+      // Use provided academicSessionId or default to latest
+      const academicSessionId = enrollment.academicSessionId || latestSessionId;
+      
       const assignTeachersQuery = `
         UPDATE student_subjects ss
         SET teacher_id = ts.teacher_id
@@ -1788,17 +1981,21 @@ router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) 
         AND ts.class_id = ss.class_id
         AND ts.academic_session_id = ss.academic_session_id
       `;
-      
-      await client.query(assignTeachersQuery, [
-        enrollment.studentId, 
+     
+      const teacherAssignResult = await client.query(assignTeachersQuery, [
+        enrollment.studentId,
         enrollment.subjectId,
         enrollment.classId,
-        enrollment.academicSessionId
+        academicSessionId
       ]);
+      
+      if (teacherAssignResult.rowCount > 0) {
+        console.log(`Assigned teacher for student ${enrollment.studentId}, subject ${enrollment.subjectId}`);
+      }
     }
-
+    
     await client.query("COMMIT");
-
+    
     res.status(201).json({
       success: true,
       message: "Student subject enrollments created successfully",
@@ -1810,7 +2007,7 @@ router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) 
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Error enrolling subjects:", error);
-
+    
     // Provide specific error messages
     if (error.code === "23505") {
       // Unique constraint violation
@@ -1825,7 +2022,7 @@ router.post("/enroll-subjects", authorizeRoles("admin"), async (req, res, next) 
         error: "Invalid student, subject, class, or academic session ID"
       });
     }
-
+    
     res.status(500).json({
       success: false,
       error: "Failed to enroll subjects: " + (error.message || "Unknown error")
