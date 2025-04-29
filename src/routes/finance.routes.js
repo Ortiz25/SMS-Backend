@@ -357,6 +357,7 @@ router.post('/payments', authorizeRoles('admin', 'teacher'), async (req, res) =>
       bankBranch,
       notes
     } = req.body;
+    console.log("Route reached")
     
     // Validate required fields
     if (!admissionNumber || !amount || !paymentDate || !academicSessionId || !paymentMethod) {
