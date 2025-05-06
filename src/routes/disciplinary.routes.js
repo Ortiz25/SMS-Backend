@@ -119,7 +119,7 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
     await client.query('BEGIN');
     
     const { 
-      admissionNumber, 
+      admission_number, 
       date, 
       type, 
       severity, 
@@ -136,6 +136,8 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
       end_date,
       auto_restore
     } = req.body;
+
+    console.log(req.body)
     
     // Handle empty date values
     const formattedFollowUp = follow_up === "" ? null : follow_up;
@@ -143,7 +145,7 @@ router.post('/incidents', authorizeRoles('admin', 'teacher'), async (req, res) =
     const formattedEndDate = end_date === "" ? null : end_date;
     
     // Validate student exists by admission number
-    const studentCheck = await client.query('SELECT id, status FROM students WHERE admission_number = $1', [admissionNumber]);
+    const studentCheck = await client.query('SELECT id, status FROM students WHERE admission_number = $1', [admission_number]);
     if (studentCheck.rows.length === 0) {
       return res.status(400).json({ message: 'Student not found' });
     }

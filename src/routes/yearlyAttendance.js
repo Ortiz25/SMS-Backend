@@ -61,11 +61,11 @@ router.get('/', async (req, res) => {
    */
   router.get('/summary/weekly', async (req, res) => {
     const { academic_session_id } = req.query;
-    
+   
     if (!academic_session_id) {
       return res.status(400).json({ message: 'Academic session ID is required' });
     }
-    
+   
     try {
       // Get academic session info
       const sessionResult = await pool.query(`
@@ -73,25 +73,25 @@ router.get('/', async (req, res) => {
         FROM academic_sessions
         WHERE id = $1
       `, [academic_session_id]);
-      
+     
       if (sessionResult.rows.length === 0) {
         return res.status(404).json({ message: 'Academic session not found' });
       }
-      
+     
       const { start_date, end_date } = sessionResult.rows[0];
-      
+     
       // Generate weekly data for the academic session
       const weeklyDataQuery = `
         WITH date_range AS (
-          SELECT 
+          SELECT
             generate_series(
-              $1::date, 
-              $2::date, 
+              $1::date,
+              $2::date,
               '1 week'::interval
             )::date AS week_start_date
         ),
         weeks AS (
-          SELECT 
+          SELECT
             EXTRACT(WEEK FROM week_start_date)::int AS week_number,
             week_start_date,
             (week_start_date + interval '6 days')::date AS week_end_date
@@ -103,7 +103,7 @@ router.get('/', async (req, res) => {
           WHERE status = 'active'
         ),
         weekly_attendance AS (
-          SELECT 
+          SELECT
             EXTRACT(WEEK FROM a.date)::int AS week_number,
             COUNT(CASE WHEN a.status = 'present' THEN 1 END) AS present_count,
             COUNT(CASE WHEN a.status = 'absent' THEN 1 END) AS absent_count,
@@ -111,12 +111,12 @@ router.get('/', async (req, res) => {
             COUNT(CASE WHEN a.status = 'on-leave' THEN 1 END) AS leave_count,
             COUNT(*) AS total_records
           FROM attendance a
-          JOIN classes c ON a.class_id = c.id
+          JOIN attendance_summary asm ON a.student_id = asm.student_id
           WHERE a.date BETWEEN $1 AND $2
-          AND c.academic_session_id = $3
+          AND asm.academic_session_id = $3
           GROUP BY week_number
         )
-        SELECT 
+        SELECT
           w.week_number,
           w.week_start_date,
           w.week_end_date,
@@ -133,15 +133,87 @@ router.get('/', async (req, res) => {
       
       const weeklyData = await pool.query(weeklyDataQuery, [start_date, end_date, academic_session_id]);
       
-      res.json({ 
+      // If no data from primary approach, use attendance_summary directly
+      if (weeklyData.rows.length === 0 || weeklyData.rows.every(row => 
+          row.present_count === 0 && row.absent_count === 0)) {
+        
+        console.log("Using direct attendance_summary approach");
+        
+        // Alternative query using only attendance_summary table
+        const altWeeklyDataQuery = `
+          WITH weeks AS (
+            SELECT
+              generate_series(1, 52) AS week_number
+          ),
+          active_students AS (
+            SELECT COUNT(id) AS total_students
+            FROM students
+            WHERE status = 'active'
+          ),
+          summary_data AS (
+            SELECT
+              SUM(present_days) AS total_present,
+              SUM(absent_days) AS total_absent,
+              SUM(late_days) AS total_late,
+              SUM(leave_days) AS total_leave,
+              SUM(total_school_days) AS total_days
+            FROM attendance_summary
+            WHERE academic_session_id = $1
+          )
+          SELECT
+            w.week_number,
+            NULL::date AS week_start_date,  -- Cannot determine actual dates
+            NULL::date AS week_end_date,    -- Cannot determine actual dates
+            CASE 
+              WHEN w.week_number = 1 THEN (SELECT total_present FROM summary_data)
+              ELSE 0
+            END AS present_count,
+            CASE 
+              WHEN w.week_number = 1 THEN (SELECT total_absent FROM summary_data)
+              ELSE 0
+            END AS absent_count,
+            CASE 
+              WHEN w.week_number = 1 THEN (SELECT total_late FROM summary_data)
+              ELSE 0
+            END AS late_count,
+            CASE 
+              WHEN w.week_number = 1 THEN (SELECT total_leave FROM summary_data)
+              ELSE 0
+            END AS leave_count,
+            CASE
+              WHEN w.week_number = 1 AND (SELECT total_days FROM summary_data) > 0
+              THEN ((SELECT total_present FROM summary_data) * 100.0 / (SELECT total_days FROM summary_data))::numeric(5,2)
+              ELSE 0
+            END AS attendance_rate,
+            (SELECT total_students FROM active_students) AS total_students
+          FROM weeks w
+          WHERE w.week_number <= 
+            CASE 
+              WHEN (SELECT total_days FROM summary_data) > 0 THEN 1
+              ELSE 0
+            END
+          ORDER BY w.week_number
+        `;
+        
+        const altWeeklyData = await pool.query(altWeeklyDataQuery, [academic_session_id]);
+        
+        return res.json({
+          academicSession: sessionResult.rows[0],
+          weeklyData: altWeeklyData.rows,
+          dataSource: 'attendance_summary_only'
+        });
+      }
+      
+      res.json({
         academicSession: sessionResult.rows[0],
-        weeklyData: weeklyData.rows 
+        weeklyData: weeklyData.rows,
+        dataSource: 'attendance_with_summary'
       });
     } catch (err) {
       console.error('Error fetching weekly attendance summary:', err);
-      res.status(500).json({ message: 'Server error' });
+      res.status(500).json({ message: 'Server error', error: err.message });
     }
-  });
+});
   
   /**
    * @route GET /api/attendance/summary/class

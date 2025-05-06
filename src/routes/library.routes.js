@@ -591,11 +591,6 @@ router.post("/books/:id/borrow", authenticateToken, async (req, res) => {
       ]
     );
 
-    // Update book available copies
-    await pool.query(
-      "UPDATE library_books SET copies_available = copies_available - 1 WHERE id = $1",
-      [bookId]
-    );
 
     res.json({
       success: true,
@@ -795,7 +790,7 @@ router.post(
       const updateBookQuery = `
       UPDATE library_books
       SET 
-        copies_available = copies_available + 1,
+        
         status = CASE 
           WHEN copies_available + 1 >= total_copies THEN 'available'
           ELSE status

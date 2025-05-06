@@ -566,7 +566,7 @@ router.get(
   async (req, res) => {
     try {
       const { classId, examId } = req.params;
-      console.log("Route reached")
+      console.log(classId, examId)
       const subjects = await pool.query(
         `SELECT DISTINCT s.*, 
               COALESCE(t.first_name || ' ' || t.last_name, 'No Teacher Assigned') AS teacher_name
