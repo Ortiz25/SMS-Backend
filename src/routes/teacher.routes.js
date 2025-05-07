@@ -163,15 +163,14 @@ router.get('/', authorizeRoles('admin', 'teacher', 'staff'), async (req, res, ne
             teacher_hour_load thl ON t.id = thl.teacher_id
         LEFT JOIN
             subject_assignments sa ON t.id = sa.teacher_id
-        WHERE
-            t.status = 'active'
+
         ORDER BY
             t.id
     `;
        
         // Execute the query with the current session ID
         const result = await pool.query(query);
-       
+        console.log(result.rows)
         // Return the results
         res.json({
             success: true,

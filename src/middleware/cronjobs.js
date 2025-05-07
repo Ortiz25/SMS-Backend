@@ -1,7 +1,7 @@
 import pool from '../config/database.js';
 import cron from 'node-cron';
 
-// // Immediate execution for testing
+// Immediate execution for testing
 // console.log('Cron job file loaded - executing immediate test');
 // (async () => {
 //     try {
@@ -25,6 +25,7 @@ import cron from 'node-cron';
 // });
 
 // Original schedules (fix syntax)
+
 cron.schedule('0 1 * * *', async () => {
     try {
         await pool.query('SELECT restore_student_status_after_disciplinary_period()');
@@ -35,6 +36,15 @@ cron.schedule('0 1 * * *', async () => {
 });
 
 cron.schedule('0 0 * * *', async () => {
+    try {
+        await pool.query('SELECT restore_teacher_status_after_leave()');
+        console.log('Teacher Leave status restoration process completed');
+    } catch (err) {
+        console.error('Error in Leave status restoration:', err);
+    }
+});
+
+cron.schedule('0 */12 * * *', async () => {
     try {
         await pool.query('SELECT restore_teacher_status_after_leave()');
         console.log('Teacher Leave status restoration process completed');

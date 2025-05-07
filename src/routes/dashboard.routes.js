@@ -388,7 +388,7 @@ router.get(
           COUNT(*) FILTER (WHERE joining_date >= (SELECT start_date FROM current_session)) as new_teachers,
           ROUND(AVG(EXTRACT(YEAR FROM AGE(CURRENT_DATE, joining_date))), 1) as avg_experience
         FROM teachers
-        WHERE status = 'active'
+        WHERE status IN ('active', 'on_leave')
       ),
       department_stats AS (
         SELECT COUNT(*) as total_departments

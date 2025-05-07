@@ -131,9 +131,10 @@ router.post(
   async (req, res) => {
     try {
       const { teacher_id, subject_id, class_id, academic_session_id } = req.body;
-      
+      console.log("route reached", req.body)
       // Validate required fields
       if (!teacher_id || !subject_id || !class_id || !academic_session_id) {
+        console.log("Error")
         return res.status(400).json({
           success: false,
           message: 'Missing required fields'
@@ -147,8 +148,9 @@ router.post(
       `;
       
       const checkResult = await pool.query(checkQuery, [teacher_id, subject_id, class_id, academic_session_id]);
-      
+      console.log(checkResult.rows)
       if (checkResult.rows.length > 0) {
+        console.log("Error 1")
         return res.status(409).json({
           success: false,
           message: 'This allocation already exists'
@@ -161,8 +163,9 @@ router.post(
       `;
       
       const teacherResult = await pool.query(teacherQuery, [teacher_id]);
-      
+      console.log(teacherResult.rows)
       if (teacherResult.rows.length === 0) {
+        console.log("Error 2")
         return res.status(404).json({
           success: false,
           message: 'Teacher not found'
@@ -175,7 +178,7 @@ router.post(
       `;
       
       const subjectResult = await pool.query(subjectQuery, [subject_id]);
-      
+      console.log(subjectResult.rows)
       if (subjectResult.rows.length === 0) {
         return res.status(404).json({
           success: false,
