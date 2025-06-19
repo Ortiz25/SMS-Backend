@@ -334,7 +334,7 @@ router.get(
                 students s
             WHERE
                 s.current_class = $2
-                AND s.status = 'active'
+                
         `;
       
       let queryParams = [classLevel, classLevel];

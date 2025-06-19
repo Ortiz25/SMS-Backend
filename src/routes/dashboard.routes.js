@@ -43,23 +43,23 @@ router.get(
       console.log("Sessions query result:", sessionsResult.rows);
 
       // Check if we have a current session (this is essential)
-      if (sessionsResult.rows.length === 0 || !sessionsResult.rows[0].current_session_id) {
+      if (
+        sessionsResult.rows.length === 0 ||
+        !sessionsResult.rows[0].current_session_id
+      ) {
         return res.status(200).json({
           success: true,
           data: {
             students: { total: 0, newThisTerm: 0 },
             attendance: { current: 0, previous: 0, change: 0 },
             performance: { currentGrade: "N/A", previousGrade: "N/A" },
-            message: "No active academic session found"
-          }
+            message: "No active academic session found",
+          },
         });
       }
 
-      const {
-        current_session_id,
-        current_start_date,
-        previous_session_id
-      } = sessionsResult.rows[0];
+      const { current_session_id, current_start_date, previous_session_id } =
+        sessionsResult.rows[0];
 
       // Get student statistics and attendance
       const statsQuery = `
@@ -95,11 +95,11 @@ router.get(
       const statsParams = [
         current_start_date,
         current_session_id,
-        previous_session_id || null
+        previous_session_id || null,
       ];
 
       const statsResult = await pool.query(statsQuery, statsParams);
-      
+
       // Get current session grade distribution
       const currentGradeQuery = `
         SELECT 
@@ -112,7 +112,9 @@ router.get(
         ORDER BY avg_points DESC
       `;
 
-      const currentGradeResult = await pool.query(currentGradeQuery, [current_session_id]);
+      const currentGradeResult = await pool.query(currentGradeQuery, [
+        current_session_id,
+      ]);
 
       // Get previous session grade distribution if a previous session exists
       let previousGradeResult = { rows: [] };
@@ -127,7 +129,9 @@ router.get(
           GROUP BY grade
           ORDER BY avg_points DESC
         `;
-        previousGradeResult = await pool.query(previousGradeQuery, [previous_session_id]);
+        previousGradeResult = await pool.query(previousGradeQuery, [
+          previous_session_id,
+        ]);
       }
 
       // Determine most common grade for current and previous sessions
@@ -136,27 +140,33 @@ router.get(
 
       if (currentGradeResult.rows.length > 0) {
         // Sort by grade count to find most common
-        const sortedGrades = [...currentGradeResult.rows].sort((a, b) => 
-          parseInt(b.grade_count) - parseInt(a.grade_count)
+        const sortedGrades = [...currentGradeResult.rows].sort(
+          (a, b) => parseInt(b.grade_count) - parseInt(a.grade_count)
         );
         currentGrade = sortedGrades[0].grade;
       }
 
       if (previousGradeResult.rows.length > 0) {
         // Sort by grade count to find most common
-        const sortedGrades = [...previousGradeResult.rows].sort((a, b) => 
-          parseInt(b.grade_count) - parseInt(a.grade_count)
+        const sortedGrades = [...previousGradeResult.rows].sort(
+          (a, b) => parseInt(b.grade_count) - parseInt(a.grade_count)
         );
         previousGrade = sortedGrades[0].grade;
       }
 
       // Extract statistics, safely handling null values
       const stats = statsResult.rows[0] || {};
-      
+
       // Handle case where no attendance data exists
-      const currentAttendance = stats.current_attendance ? parseFloat(stats.current_attendance) : 0;
-      const previousAttendance = stats.previous_attendance ? parseFloat(stats.previous_attendance) : 0;
-      const attendanceChange = (currentAttendance - previousAttendance).toFixed(1);
+      const currentAttendance = stats.current_attendance
+        ? parseFloat(stats.current_attendance)
+        : 0;
+      const previousAttendance = stats.previous_attendance
+        ? parseFloat(stats.previous_attendance)
+        : 0;
+      const attendanceChange = (currentAttendance - previousAttendance).toFixed(
+        1
+      );
 
       return res.status(200).json({
         success: true,
@@ -189,7 +199,7 @@ router.get(
           attendance: { current: 0, previous: 0, change: 0 },
           performance: { currentGrade: "N/A", previousGrade: "N/A" },
         },
-        message: "Error retrieving student statistics"
+        message: "Error retrieving student statistics",
       });
     }
   }
@@ -511,16 +521,24 @@ router.get("/summary", async (req, res, next) => {
         // Get library basic stats
         const libraryStatsResult = await client.query(`
          SELECT
-  COUNT(*) as total_books,
+  COUNT(*) AS total_books,
   SUM(CASE 
         WHEN copies_available IS NULL THEN 0
         WHEN copies_available < 0 THEN 0
         ELSE copies_available 
-      END) as available_books,
-  SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_titles,
-  SUM(CASE WHEN status = 'borrowed' THEN 1 ELSE 0 END) as borrowed_titles,
-  SUM(total_copies) as total_copies
+      END) AS available_books,
+  SUM(CASE 
+        WHEN copies_available IS NOT NULL AND total_copies - copies_available > 0 THEN 1 
+        ELSE 0 
+      END) AS borrowed_titles,
+  SUM(CASE 
+        WHEN copies_available IS NULL OR total_copies IS NULL THEN 0
+        WHEN total_copies - copies_available < 0 THEN 0
+        ELSE total_copies - copies_available 
+      END) AS borrowed_copies,
+  SUM(total_copies) AS total_copies
 FROM library_books
+
         `);
 
         // Get upcoming events (limited to 2)
@@ -786,16 +804,23 @@ FROM library_books
 
       // Get library summary
       const libraryStatsResult = await client.query(`
-        SELECT
-  COUNT(*) as total_books,
+           SELECT
+  COUNT(*) AS total_books,
   SUM(CASE 
         WHEN copies_available IS NULL THEN 0
         WHEN copies_available < 0 THEN 0
         ELSE copies_available 
-      END) as available_books,
-  SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as available_titles,
-  SUM(CASE WHEN status = 'borrowed' THEN 1 ELSE 0 END) as borrowed_titles,
-  SUM(total_copies) as total_copies
+      END) AS available_books,
+  SUM(CASE 
+        WHEN copies_available IS NOT NULL AND total_copies - copies_available > 0 THEN 1 
+        ELSE 0 
+      END) AS borrowed_titles,
+  SUM(CASE 
+        WHEN copies_available IS NULL OR total_copies IS NULL THEN 0
+        WHEN total_copies - copies_available < 0 THEN 0
+        ELSE total_copies - copies_available 
+      END) AS borrowed_copies,
+  SUM(total_copies) AS total_copies
 FROM library_books
       `);
 
@@ -1534,21 +1559,21 @@ router.get(
           `SELECT year, term FROM academic_sessions WHERE id = $1`,
           [currentSessionId]
         );
-        
+
         if (currentSessionResult.rows.length > 0) {
           const currentYear = parseInt(currentSessionResult.rows[0].year);
           const currentTerm = parseInt(currentSessionResult.rows[0].term);
-          
+
           // Calculate previous term and year
           let previousTerm = currentTerm - 1;
           let previousYear = currentYear;
-          
+
           // If we're at term 1, wrap around to term 3 of previous year
           if (previousTerm < 1) {
             previousTerm = 3;
             previousYear = currentYear - 1;
           }
-          
+
           // Find the previous academic session
           const previousSessionResult = await pool.query(
             `SELECT id FROM academic_sessions 
@@ -1556,7 +1581,7 @@ router.get(
             LIMIT 1`,
             [previousYear.toString(), previousTerm]
           );
-          
+
           previousSessionId =
             previousSessionResult.rows.length > 0
               ? previousSessionResult.rows[0].id
@@ -1566,7 +1591,7 @@ router.get(
 
       // Get examinations based on the provided parameters
       let examinations;
-      
+
       if (examId) {
         // Get specific examination if examId is provided
         const examinationResult = await pool.query(
@@ -1576,11 +1601,11 @@ router.get(
            WHERE e.id = $1`,
           [examId]
         );
-        
+
         if (examinationResult.rows.length === 0) {
           return res.status(404).json({ error: "Examination not found" });
         }
-        
+
         examinations = examinationResult.rows;
       } else {
         // Get ALL completed and ongoing examinations regardless of session
@@ -1591,7 +1616,7 @@ router.get(
            WHERE e.status IN ('completed', 'ongoing', 'scheduled')
            ORDER BY e.academic_session_id DESC, e.id DESC`
         );
-        
+
         examinations = examinationsResult.rows;
       }
 
@@ -1614,14 +1639,14 @@ router.get(
            ORDER BY c.level`,
           [exam.id]
         );
-        
+
         let relevantClassLevels = [];
-        
+
         if (examClassesResult.rows.length > 0) {
           // If we have actual classes with results for this exam, use them
-          relevantClassLevels = examClassesResult.rows.map(row => row.level);
+          relevantClassLevels = examClassesResult.rows.map((row) => row.level);
         } else {
-          // Otherwise, fetch all classes for this curriculum type 
+          // Otherwise, fetch all classes for this curriculum type
           const curriculumClassesResult = await pool.query(
             `SELECT DISTINCT level
              FROM classes
@@ -1629,9 +1654,11 @@ router.get(
              ORDER BY level`,
             [exam.curriculum_type]
           );
-          
+
           if (curriculumClassesResult.rows.length > 0) {
-            relevantClassLevels = curriculumClassesResult.rows.map(row => row.level);
+            relevantClassLevels = curriculumClassesResult.rows.map(
+              (row) => row.level
+            );
           }
         }
 
@@ -1651,7 +1678,7 @@ router.get(
         // If there's a previous session, get that data for trend comparison
         let previousResults = [];
         let previousExamId = null;
-        
+
         if (previousSessionId && exam.exam_type_id) {
           // Try to find a matching examination from previous session (same exam_type_id)
           const previousExamResult = await pool.query(
@@ -1666,7 +1693,7 @@ router.get(
 
           if (previousExamResult.rows.length > 0) {
             previousExamId = previousExamResult.rows[0].id;
-            
+
             previousResults = await pool.query(
               `SELECT 
                c.level as class_level,
@@ -1746,7 +1773,7 @@ router.get(
           academicSessionId: exam.academic_session_id,
           curriculumType: exam.curriculum_type,
           overallAverage,
-          formData
+          formData,
         });
       }
 
