@@ -31,6 +31,7 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 s.admission_number,
                 s.current_class,
                 s.stream,
+                s.curriculum_type,
                 c.name AS class_name
             FROM 
                 students s
@@ -38,10 +39,10 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 classes c ON s.current_class = c.level AND s.stream = c.stream
             WHERE 
                 s.id = $1
-                AND c.academic_session_id = $2
+                
         `;
 
-        // 2. Fetch examination results summary
+        // 2. Fetch examination results summary for current session
         const resultSummaryQuery = `
             SELECT 
                 srs.average_marks,
@@ -51,7 +52,9 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 srs.position_overall,
                 srs.subjects_passed,
                 srs.subjects_failed,
-                e.name AS examination_name
+                e.name AS examination_name,
+                e.start_date,
+                e.end_date
             FROM 
                 student_result_summary srs
             JOIN 
@@ -61,10 +64,9 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 AND srs.academic_session_id = $2
             ORDER BY 
                 e.end_date DESC
-            LIMIT 1
         `;
 
-        // 3. Fetch subject-wise performance
+        // 3. Fetch subject-wise performance for ALL sessions (current and previous)
         const subjectPerformanceQuery = `
             SELECT 
                 s.name AS subject_name,
@@ -73,7 +75,15 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 er.grade,
                 er.points,
                 es.total_marks,
-                ex.name AS exam_name
+                ex.name AS exam_name,
+                ex.start_date,
+                ex.end_date,
+                acs.year,
+                acs.term,
+                CASE 
+                    WHEN acs.id = $2 THEN 'Current'
+                    ELSE 'Previous'
+                END AS session_type
             FROM 
                 exam_results er
             JOIN 
@@ -82,14 +92,38 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 subjects s ON es.subject_id = s.id
             JOIN 
                 examinations ex ON es.examination_id = ex.id
+            JOIN 
+                academic_sessions acs ON ex.academic_session_id = acs.id
             WHERE 
                 er.student_id = $1
-                AND ex.academic_session_id = $2
             ORDER BY 
-                ex.end_date DESC, s.name
+                acs.year DESC, acs.term DESC, ex.end_date DESC, s.name
         `;
 
-        // 4. Fetch attendance summary
+        // 4. Fetch class promotion history
+        const promotionHistoryQuery = `
+            SELECT 
+                sch.class_name AS from_class,
+                sch.stream AS from_stream,
+                sch.promotion_status,
+                sch.promoted_on,
+                sch.remarks,
+                acs.year,
+                acs.term,
+                u.username AS promoted_by_user
+            FROM 
+                student_class_history sch
+            JOIN 
+                academic_sessions acs ON sch.academic_session_id = acs.id
+            LEFT JOIN 
+                users u ON sch.promoted_by = u.id
+            WHERE 
+                sch.student_id = $1
+            ORDER BY 
+                sch.promoted_on DESC
+        `;
+
+        // 5. Fetch attendance summary
         const attendanceSummaryQuery = `
             SELECT 
                 present_days,
@@ -97,29 +131,17 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
                 late_days,
                 leave_days,
                 total_school_days,
-                attendance_percentage
+                attendance_percentage,
+                acs.year,
+                acs.term
             FROM 
-                attendance_summary
+                attendance_summary ats
+            JOIN 
+                academic_sessions acs ON ats.academic_session_id = acs.id
             WHERE 
-                student_id = $1
-                AND academic_session_id = $2
-        `;
-
-        // 5. Fetch fee details
-        const feeDetailsQuery = `
-            SELECT 
-                total_fee,
-                paid_amount,
-                balance,
-                discount_amount,
-                scholarship_amount,
-                status AS payment_status,
-                last_payment_date
-            FROM 
-                student_fee_details
-            WHERE 
-                student_id = $1
-                AND academic_session_id = $2
+                ats.student_id = $1
+            ORDER BY 
+                acs.year DESC, acs.term DESC
         `;
 
         // Execute all queries in parallel
@@ -127,23 +149,30 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
             studentInfo, 
             resultSummary, 
             subjectPerformance, 
-            attendanceSummary, 
-            feeDetails
+            promotionHistory,
+            attendanceSummary
         ] = await Promise.all([
-            pool.query(studentInfoQuery, [studentId, academicSessionId]),
+            pool.query(studentInfoQuery, [studentId]),
             pool.query(resultSummaryQuery, [studentId, academicSessionId]),
             pool.query(subjectPerformanceQuery, [studentId, academicSessionId]),
-            pool.query(attendanceSummaryQuery, [studentId, academicSessionId]),
-            pool.query(feeDetailsQuery, [studentId, academicSessionId])
+            pool.query(promotionHistoryQuery, [studentId]),
+            pool.query(attendanceSummaryQuery, [studentId])
         ]);
 
-        // Group subjects by examination
+        // Group subjects by examination and session
         const subjectsByExam = {};
         subjectPerformance.rows.forEach(row => {
-            if (!subjectsByExam[row.exam_name]) {
-                subjectsByExam[row.exam_name] = [];
+            const examKey = `${row.exam_name} (${row.year} Term ${row.term}) - ${row.session_type}`;
+            if (!subjectsByExam[examKey]) {
+                subjectsByExam[examKey] = {
+                    examName: row.exam_name,
+                    year: row.year,
+                    term: row.term,
+                    sessionType: row.session_type,
+                    subjects: []
+                };
             }
-            subjectsByExam[row.exam_name].push({
+            subjectsByExam[examKey].subjects.push({
                 subject: row.subject_name,
                 score: row.marks_obtained,
                 outOf: row.total_marks,
@@ -152,47 +181,47 @@ router.get('/student/:id', authorizeRoles('admin', 'teacher', 'parent', 'staff')
             });
         });
 
+        // Format promotion history
+        const formattedPromotions = promotionHistory.rows.map(promo => ({
+            from_class: `${promo.from_class} ${promo.from_stream || ''}`.trim(),
+            promotion_status: promo.promotion_status,
+            promoted_on: promo.promoted_on,
+            remarks: promo.remarks,
+            academic_year: promo.year,
+            term: promo.term,
+            promoted_by: promo.promoted_by_user
+        }));
+
+        // Get current academic session result summary
+        const currentResultSummary = resultSummary.rows[0] || {};
+
         // Format the response
         res.json({
             success: true,
             data: {
                 studentInfo: studentInfo.rows[0] || {},
                 academicStatus: {
-                    class: studentInfo.rows[0]?.class_name || null,
+                    class: studentInfo.rows[0]?.current_class || null,
                     stream: studentInfo.rows[0]?.stream || null,
-                    average_score: resultSummary.rows[0]?.average_marks || 0,
-                    averageGrade: resultSummary.rows[0]?.grade || 'N/A',
-                    position_in_class: resultSummary.rows[0]?.position_in_class || null,
-                    position_overall: resultSummary.rows[0]?.position_overall || null,
-                    subjects_passed: resultSummary.rows[0]?.subjects_passed || 0,
-                    subjects_failed: resultSummary.rows[0]?.subjects_failed || 0,
-                    examination: resultSummary.rows[0]?.examination_name || 'N/A'
+                    curriculum_type: studentInfo.rows[0]?.curriculum_type || null,
+                    average_score: currentResultSummary?.average_marks || 0,
+                    averageGrade: currentResultSummary?.grade || 'N/A',
+                    position_in_class: currentResultSummary?.position_in_class || null,
+                    position_overall: currentResultSummary?.position_overall || null,
+                    subjects_passed: currentResultSummary?.subjects_passed || 0,
+                    subjects_failed: currentResultSummary?.subjects_failed || 0,
+                    examination: currentResultSummary?.examination_name || 'N/A'
                 },
-                attendance: attendanceSummary.rows[0] || {
-                    present_days: 0,
-                    absent_days: 0,
-                    late_days: 0,
-                    leave_days: 0,
-                    total_school_days: 0,
-                    attendance_percentage: 0
-                },
-                fees: feeDetails.rows[0] || {
-                    total_fee: 0,
-                    paid_amount: 0,
-                    balance: 0,
-                    discount_amount: 0,
-                    scholarship_amount: 0,
-                    payment_status: 'N/A',
-                    last_payment_date: null
-                },
-                subjects: subjectsByExam
+                promotionHistory: formattedPromotions,
+                attendance: attendanceSummary.rows || [],
+                subjects: subjectsByExam,
+                examSummaries: resultSummary.rows || []
             }
         });
     } catch (error) {
         next(error);
     }
 });
-
 // Get current academic session
 router.get('/current', async (req, res) => {
     try {

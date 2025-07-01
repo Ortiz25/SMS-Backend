@@ -37,6 +37,7 @@ import subjectSettings from "./src/routes/subjectSettings.js"
 import academicSettingsRoutes from "./src/routes/academicSettings.routes.js"
 import examinationSettingsRoutes from "./src/routes/examinationsSettings.routes.js"
 import schoolStructuresRoutes from "./src/routes/schoolStructure.routes.js"
+import promotionsRoute from "./src/routes/promotions.js"
 import { createUserModel } from './src/models/userModel.js';
 import passwordMgt from "./src/routes/passwordMgt.routes.js"
 
@@ -94,6 +95,8 @@ app.use('/api/academic-settings', academicSettingsRoutes);
 app.use('/api/examinations', examinationSettingsRoutes);
 app.use('/api/school-structure', schoolStructuresRoutes);
 app.use('/api/subjects-settings', subjectSettings);
+app.use('/api/promotions', promotionsRoute);
+
 
 
 
