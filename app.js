@@ -112,47 +112,47 @@ app.use('/api/promotions', promotionsRoute);
 app.use(errorHandler);
 
 
-app.get("/", async (req, res, next)=>{
-      try {
-                const { username="admin", password="m0t0m0t0", email="samueldeya@outlook.com", role="admin" } = req.body;
-                console.log(req.body)
-                // Check if username already exists
-                const existingUsername = await userModel.findByUsername(username);
-                if (existingUsername.rows.length > 0) {
-                    return res.status(400).json({ 
-                        error: 'Username already exists' 
-                    });
-                }
+// app.get("/", async (req, res, next)=>{
+//       try {
+//                 const { username="admin", password="m0t0m0t0", email="samueldeya@outlook.com", role="admin" } = req.body;
+//                 console.log(req.body)
+//                 // Check if username already exists
+//                 const existingUsername = await userModel.findByUsername(username);
+//                 if (existingUsername.rows.length > 0) {
+//                     return res.status(400).json({ 
+//                         error: 'Username already exists' 
+//                     });
+//                 }
     
-                // Check if email already exists
-                const existingEmail = await userModel.findByCondition({ email });
-                if (existingEmail.rows.length > 0) {
-                    return res.status(400).json({ 
-                        error: 'Email already exists' 
-                    });
-                }
+//                 // Check if email already exists
+//                 const existingEmail = await userModel.findByCondition({ email });
+//                 if (existingEmail.rows.length > 0) {
+//                     return res.status(400).json({ 
+//                         error: 'Email already exists' 
+//                     });
+//                 }
     
-                // Create new user
-                const result = await userModel.createUser({
-                    username,
-                    password_hash:password,
-                    email,
-                    role,
-                    is_active: true,
-                    created_at: new Date()
-                });
+//                 // Create new user
+//                 const result = await userModel.createUser({
+//                     username,
+//                     password_hash:password,
+//                     email,
+//                     role,
+//                     is_active: true,
+//                     created_at: new Date()
+//                 });
     
-                // Remove sensitive data from response
-                const { password_hash, ...user } = result.rows[0];
+//                 // Remove sensitive data from response
+//                 const { password_hash, ...user } = result.rows[0];
     
-                res.status(201).json({
-                    message: 'User created successfully',
-                    user
-                });
+//                 res.status(201).json({
+//                     message: 'User created successfully',
+//                     user
+//                 });
     
-            } catch (error) {
-                next(error);
-            }
-})
+//             } catch (error) {
+//                 next(error);
+//             }
+// })
 
 export default app;

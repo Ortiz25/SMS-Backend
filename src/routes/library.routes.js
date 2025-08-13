@@ -732,88 +732,56 @@ router.post(
  * @desc    Return a borrowed book
  * @access  Private (Librarian, Admin)
  */
-router.post(
-  "/books/:id/return",
-  authorizeRoles("admin", "librarian"),
-  async (req, res, next) => {
-    try {
-      const bookId = parseInt(req.params.id, 10);
-
-      if (isNaN(bookId)) {
-        return res.status(400).json({
-          success: false,
-          error: "Invalid book ID",
-        });
-      }
-
-      // Check if the book exists
-      const checkBookQuery = `SELECT * FROM library_books WHERE id = $1`;
-      const bookResult = await pool.query(checkBookQuery, [bookId]);
-
-      if (bookResult.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          error: "Book not found",
-        });
-      }
-
-      // Find the active borrowing record for this book
-      const borrowingQuery = `
+router.post('/books/:bookId/return', authenticateToken, async (req, res) => {
+  const { bookId } = req.params;
+  
+  try {
+    // First, check if there's an active borrowing record
+    const borrowingRecord = await pool.query(`
       SELECT * FROM book_borrowing 
-      WHERE book_id = $1 AND status IN ('borrowed', 'overdue')
-      ORDER BY id DESC LIMIT 1
-    `;
-      const borrowingResult = await pool.query(borrowingQuery, [bookId]);
+      WHERE book_id = $1 AND status IN ('borrowed', 'overdue') AND return_date IS NULL
+      ORDER BY borrow_date DESC 
+      LIMIT 1
+    `, [bookId]);
 
-      if (borrowingResult.rows.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: "This book is not currently borrowed",
-        });
-      }
+    if (borrowingRecord.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active borrowing record found for this book'
+      });
+    }
 
-      const borrowing = borrowingResult.rows[0];
+    const borrowing = borrowingRecord.rows[0];
 
-      // Update the borrowing record
-      const updateBorrowingQuery = `
-      UPDATE book_borrowing
+    // Update the borrowing record to mark as returned
+    await pool.query(`
+      UPDATE book_borrowing 
       SET 
         status = 'returned',
         return_date = CURRENT_DATE,
         updated_at = NOW()
       WHERE id = $1
-      RETURNING *
-    `;
-      await pool.query(updateBorrowingQuery, [borrowing.id]);
+    `, [borrowing.id]);
 
-      // Update the book's availability
-      const updateBookQuery = `
-      UPDATE library_books
-      SET 
-        
-        status = CASE 
-          WHEN copies_available + 1 >= total_copies THEN 'available'
-          ELSE status
-        END,
-        updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-    `;
-      const updatedBook = await pool.query(updateBookQuery, [bookId]);
+    // The trigger will automatically update the library_books table
+    
+    res.json({
+      success: true,
+      message: 'Book returned successfully',
+      data: {
+        book_id: bookId,
+        borrowing_id: borrowing.id,
+        return_date: new Date().toISOString().split('T')[0]
+      }
+    });
 
-      return res.status(200).json({
-        success: true,
-        message: "Book returned successfully",
-        data: updatedBook.rows[0],
-      });
-    } catch (error) {
-      console.error("Error returning book:", error);
-      return res.status(500).json({
-        success: false,
-        error: "Server error returning book",
-      });
-    }
+  } catch (error) {
+    console.error('Error returning book:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to return book'
+    });
   }
-);
+});
 
 export default router;
